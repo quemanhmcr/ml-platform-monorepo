@@ -18,8 +18,8 @@ spec:
       serviceAccountName: ml-inference-sa
       containers:
         - name: inference
-          image: # Will be overridden by overlays
-            imagePullPolicy: Always
+          image: inference:latest
+          imagePullPolicy: Always
           ports:
             - containerPort: 8080
               name: http
