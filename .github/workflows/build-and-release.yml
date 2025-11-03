@@ -1,0 +1,109 @@
+name: build-and-release
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+    paths:
+      - 'components/inference/**'
+      - '.github/workflows/build-and-release.yml'
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  IMAGE_NAME: ml-fashion-recommender/inference
+
+jobs:
+  build-push-and-update-gitops:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Derive environment
+        id: env
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF##*/}" == "main" ]]; then ENV=production; TAG_PREFIX=main; else ENV=staging; TAG_PREFIX=develop; fi
+          echo "env=${ENV}" >> $GITHUB_OUTPUT
+          echo "tag_prefix=${TAG_PREFIX}" >> $GITHUB_OUTPUT
+          echo "sha7=${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
+
+      - name: Configure AWS credentials (OIDC AssumeRole)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_IAM_ROLE_ARN }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push inference image
+        id: docker
+        env:
+          ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+          REGION: ${{ secrets.AWS_REGION }}
+          TAG_PREFIX: ${{ steps.env.outputs.tag_prefix }}
+          SHA7: ${{ steps.env.outputs.sha7 }}
+        run: |
+          set -Eeuo pipefail
+          REPO_URI="${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com/${IMAGE_NAME}"
+          TAG_SHA="${TAG_PREFIX}-${SHA7}"
+          TAG_LATEST="${TAG_PREFIX}-latest"
+          echo "repo_uri=${REPO_URI}" >> $GITHUB_OUTPUT
+          echo "tag_sha=${TAG_SHA}" >> $GITHUB_OUTPUT
+          echo "tag_latest=${TAG_LATEST}" >> $GITHUB_OUTPUT
+
+          docker build -t "${REPO_URI}:${TAG_SHA}" -t "${REPO_URI}:${TAG_LATEST}" ./components/inference
+          docker push "${REPO_URI}:${TAG_SHA}"
+          docker push "${REPO_URI}:${TAG_LATEST}"
+
+      - name: Resolve GitOps secrets
+        id: gitops
+        env:
+          GITOPS_TOKEN: ${{ secrets.GITOPS_TOKEN }}
+          GITOPS_REPO: ${{ secrets.GITOPS_REPO }}
+        run: |
+          set -Eeuo pipefail
+          if [[ -n "${GITOPS_REPO}" && -n "${GITOPS_TOKEN}" ]]; then
+            echo "enabled=true" >> $GITHUB_OUTPUT
+          else
+            echo "enabled=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Update GitOps repo image tag
+        env:
+          GITOPS_TOKEN: ${{ secrets.GITOPS_TOKEN }}
+          GITOPS_REPO: ${{ secrets.GITOPS_REPO }}
+        if: ${{ steps.gitops.outputs.enabled == 'true' }}
+        run: |
+          set -Eeuo pipefail
+          ENV="${{ steps.env.outputs.env }}"
+          REPO_URI="${{ steps.docker.outputs.repo_uri }}"
+          TAG_SHA="${{ steps.docker.outputs.tag_sha }}"
+          WORKDIR=$(mktemp -d)
+          git config --global user.name "gh-actions-bot"
+          git config --global user.email "gh-actions-bot@users.noreply.github.com"
+          git clone "https://${GITOPS_TOKEN}@${GITOPS_REPO#https://}" "$WORKDIR/gitops"
+          pushd "$WORKDIR/gitops/apps/ml-recommendation-inference/overlays/${ENV}"
+          # Cập nhật newName và newTag bằng yq nếu có, fallback sed
+          if command -v yq >/dev/null 2>&1; then
+            yq -i 
+              '.images[] |= (select(.name=="inference").newName = "'"${REPO_URI}"'")' kustomization.yaml || true
+            yq -i 
+              '.images[] |= (select(.name=="inference").newTag = "'"${TAG_SHA}"'")' kustomization.yaml
+          else
+            # sed fallback: thay newTag và newName theo dòng hiện hữu
+            sed -i "s#^\s*newName: .*#    newName: ${REPO_URI}#" kustomization.yaml
+            sed -i "s#^\s*newTag: .*#    newTag: ${TAG_SHA}#" kustomization.yaml
+          fi
+          git add kustomization.yaml
+          git commit -m "ci: update inference image to ${TAG_SHA} (${ENV})"
+          git push origin HEAD
+          popd
+
+

@@ -23,5 +23,6 @@ ENV PYTHONPATH=/app
 # Expose port for API
 EXPOSE 8080
 
-# Entry point
-ENTRYPOINT ["python", "-m", "src.main"]
+# Entry point: chạy FastAPI bằng Uvicorn
+ENV APP_VERSION=1.0.0
+ENTRYPOINT ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8080"]
