@@ -32,11 +32,37 @@ jobs:
           echo "tag_prefix=${TAG_PREFIX}" >> $GITHUB_OUTPUT
           echo "sha7=${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
 
+      - name: Load AWS configuration (Secrets-only, Zero-Trust)
+        id: aws-config-loader
+        env:
+          AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+          AWS_IAM_ROLE_ARN: ${{ secrets.AWS_IAM_ROLE_ARN }}
+          AWS_ECR_REGISTRY: ${{ secrets.AWS_ECR_REGISTRY }}
+        run: |
+          set -Eeuo pipefail
+          # Validate required secrets
+          : "${AWS_ACCOUNT_ID:?Missing AWS_ACCOUNT_ID}"
+          : "${AWS_REGION:?Missing AWS_REGION}"
+          : "${AWS_IAM_ROLE_ARN:?Missing AWS_IAM_ROLE_ARN}"
+
+          # Prefer explicit registry secret if provided, else derive from account/region
+          if [[ -n "${AWS_ECR_REGISTRY:-}" && "${AWS_ECR_REGISTRY}" != "null" ]]; then
+            ECR_REGISTRY="${AWS_ECR_REGISTRY}"
+          else
+            ECR_REGISTRY="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+          fi
+
+          echo "account_id=${AWS_ACCOUNT_ID}" >> $GITHUB_OUTPUT
+          echo "region=${AWS_REGION}" >> $GITHUB_OUTPUT
+          echo "iam_role_arn=${AWS_IAM_ROLE_ARN}" >> $GITHUB_OUTPUT
+          echo "ecr_registry=${ECR_REGISTRY}" >> $GITHUB_OUTPUT
+
       - name: Configure AWS credentials (OIDC AssumeRole)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_IAM_ROLE_ARN }}
-          aws-region: ${{ secrets.AWS_REGION }}
+          role-to-assume: ${{ steps.aws-config-loader.outputs.iam_role_arn }}
+          aws-region: ${{ steps.aws-config-loader.outputs.region }}
           role-session-name: GitHubActions-${{ github.run_id }}-${{ github.run_attempt }}
           retry-max-attempts: 0
           disable-retry: true
@@ -51,13 +77,13 @@ jobs:
       - name: Build and push inference image
         id: docker
         env:
-          ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
-          REGION: ${{ secrets.AWS_REGION }}
+          ECR_REGISTRY: ${{ steps.aws-config-loader.outputs.ecr_registry }}
+          REGION: ${{ steps.aws-config-loader.outputs.region }}
           TAG_PREFIX: ${{ steps.env.outputs.tag_prefix }}
           SHA7: ${{ steps.env.outputs.sha7 }}
         run: |
           set -Eeuo pipefail
-          REPO_URI="${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com/${IMAGE_NAME}"
+          REPO_URI="${ECR_REGISTRY}/${IMAGE_NAME}"
           TAG_SHA="${TAG_PREFIX}-${SHA7}"
           TAG_LATEST="${TAG_PREFIX}-latest"
           echo "repo_uri=${REPO_URI}" >> $GITHUB_OUTPUT
