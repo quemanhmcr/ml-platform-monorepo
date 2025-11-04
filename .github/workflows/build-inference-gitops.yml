@@ -66,15 +66,26 @@ jobs:
             GITOPS_OVERLAY="staging"
           fi
           
-          SHORT_SHA="${GITHUB_SHA::7}"
+          # Extract SHA and timestamp for tag generation
           FULL_SHA="${GITHUB_SHA}"
+          SHORT_SHA="${GITHUB_SHA::7}"
+          BUILD_TIMESTAMP=$(date -u +"%Y%m%d-%H%M%S")
+          RUN_ID="${GITHUB_RUN_ID}"
           
-          # Generate immutable tags
+          # BigTech ML Platform Standard: Immutable tag strategy
+          # Primary tag: full SHA (always unique, immutable)
+          # Latest tag: branch-latest (mutable, points to latest build)
+          # Build tag: branch-{short-sha}-{timestamp} (for traceability)
+          
           if [ "${{ github.event_name }}" == "pull_request" ]; then
-            PRIMARY_TAG="pr-${{ github.event.pull_request.number }}-${SHORT_SHA}"
+            # PR builds: use PR number + full SHA
+            PRIMARY_TAG="pr-${{ github.event.pull_request.number }}-${FULL_SHA}"
+            BUILD_TAG="pr-${{ github.event.pull_request.number }}-${SHORT_SHA}-${BUILD_TIMESTAMP}"
             LATEST_TAG="${TAG_PREFIX}-latest"
           else
-            PRIMARY_TAG="${TAG_PREFIX}-${SHORT_SHA}"
+            # Branch builds: use branch + full SHA for primary (immutable)
+            PRIMARY_TAG="${TAG_PREFIX}-${FULL_SHA}"
+            BUILD_TAG="${TAG_PREFIX}-${SHORT_SHA}-${BUILD_TIMESTAMP}"
             LATEST_TAG="${TAG_PREFIX}-latest"
           fi
           
@@ -82,13 +93,18 @@ jobs:
           echo "tag_prefix=${TAG_PREFIX}" >> $GITHUB_OUTPUT
           echo "sha7=${SHORT_SHA}" >> $GITHUB_OUTPUT
           echo "full_sha=${FULL_SHA}" >> $GITHUB_OUTPUT
+          echo "build_timestamp=${BUILD_TIMESTAMP}" >> $GITHUB_OUTPUT
+          echo "run_id=${RUN_ID}" >> $GITHUB_OUTPUT
           echo "primary_tag=${PRIMARY_TAG}" >> $GITHUB_OUTPUT
+          echo "build_tag=${BUILD_TAG}" >> $GITHUB_OUTPUT
           echo "latest_tag=${LATEST_TAG}" >> $GITHUB_OUTPUT
           echo "gitops_overlay=${GITOPS_OVERLAY}" >> $GITHUB_OUTPUT
           
-          echo "📋 Environment: ${ENV}"
-          echo "📋 Primary Tag: ${PRIMARY_TAG}"
-          echo "📋 Latest Tag: ${LATEST_TAG}"
+          echo "📋 Tag Strategy (BigTech ML Platform Standard):"
+          echo "   Environment: ${ENV}"
+          echo "   Primary Tag (immutable): ${PRIMARY_TAG}"
+          echo "   Build Tag (traceable): ${BUILD_TAG}"
+          echo "   Latest Tag (mutable): ${LATEST_TAG}"
 
       - name: Load AWS configuration (Secrets-only, Zero-Trust)
         id: aws-config-loader
@@ -183,8 +199,11 @@ jobs:
           COMPONENT: ${{ env.COMPONENT }}
           REPO_PREFIX: ${{ env.REPO_PREFIX }}
           PRIMARY_TAG: ${{ steps.env.outputs.primary_tag }}
+          BUILD_TAG: ${{ steps.env.outputs.build_tag }}
           LATEST_TAG: ${{ steps.env.outputs.latest_tag }}
           FULL_SHA: ${{ steps.env.outputs.full_sha }}
+          BUILD_TIMESTAMP: ${{ steps.env.outputs.build_timestamp }}
+          RUN_ID: ${{ steps.env.outputs.run_id }}
         run: |
           set -euo pipefail
           
@@ -192,8 +211,11 @@ jobs:
           
           echo "🔨 Building inference image..."
           echo "   Repository: ${REPO_URI}"
-          echo "   Primary Tag: ${PRIMARY_TAG}"
-          echo "   Latest Tag: ${LATEST_TAG}"
+          echo "   Primary Tag (immutable): ${PRIMARY_TAG}"
+          echo "   Build Tag (traceable): ${BUILD_TAG}"
+          echo "   Latest Tag (mutable): ${LATEST_TAG}"
+          echo "   Build Timestamp: ${BUILD_TIMESTAMP}"
+          echo "   Run ID: ${RUN_ID}"
           
           # Validate component directory exists
           if [ ! -d "components/${COMPONENT}" ]; then
@@ -207,32 +229,96 @@ jobs:
             exit 1
           fi
           
-          # Build Docker image with immutable tags
+          # Build Docker image with immutable tags (BigTech ML Platform Standard)
+          # Primary tag: full SHA (immutable, always unique)
+          # Build tag: short SHA + timestamp (for traceability)
+          # Latest tag: branch-latest (mutable, for convenience)
           docker build \
             -t "${REPO_URI}:${PRIMARY_TAG}" \
+            -t "${REPO_URI}:${BUILD_TAG}" \
             -t "${REPO_URI}:${LATEST_TAG}" \
-            -t "${REPO_URI}:${FULL_SHA}" \
             -f "components/${COMPONENT}/Dockerfile" \
             "components/${COMPONENT}/"
           
           echo "✅ Build completed"
+          echo "📋 Tags created:"
+          echo "   - ${PRIMARY_TAG} (immutable primary)"
+          echo "   - ${BUILD_TAG} (traceable build)"
+          echo "   - ${LATEST_TAG} (mutable latest)"
           
-          # Push images
+          # Push images with error handling for immutable tags
           echo "🚀 Pushing images to ECR..."
-          docker push "${REPO_URI}:${PRIMARY_TAG}"
-          docker push "${REPO_URI}:${LATEST_TAG}"
           
-          # Push full SHA tag only if not PR
-          if [ "${{ github.event_name }}" != "pull_request" ]; then
-            docker push "${REPO_URI}:${FULL_SHA}"
+          # Function to push with error handling for immutable tags
+          # Returns 0 on success (including when tag already exists)
+          push_image() {
+            local tag=$1
+            local is_required=${2:-true}
+            local push_output
+            
+            push_output=$(docker push "${REPO_URI}:${tag}" 2>&1)
+            local push_exit=$?
+            
+            if [ $push_exit -eq 0 ]; then
+              echo "✅ Successfully pushed ${REPO_URI}:${tag}"
+              return 0
+            else
+              # Check if error is due to immutable tag already existing
+              if echo "$push_output" | grep -qi "already exists.*immutable\|cannot be overwritten.*immutable"; then
+                echo "⚠️  Tag ${tag} already exists in ECR (immutable policy), skipping..."
+                echo "   This is expected if content is identical - tag is already correct"
+                return 0  # Not an error - tag exists with same content
+              else
+                if [ "$is_required" = "true" ]; then
+                  echo "❌ Failed to push required tag: ${tag}"
+                  echo "Error output: $push_output"
+                  return 1
+                else
+                  echo "⚠️  Failed to push optional tag: ${tag} (non-fatal)"
+                  echo "Error output: $push_output"
+                  return 0
+                fi
+              fi
+            fi
+          }
+          
+          # Push strategy (BigTech ML Platform Standard):
+          # 1. Primary tag (full SHA) - REQUIRED, always unique
+          # 2. Build tag (short SHA + timestamp) - OPTIONAL, for traceability
+          # 3. Latest tag (branch-latest) - OPTIONAL, mutable reference
+          
+          # Push primary tag (immutable, full SHA - always unique per commit)
+          echo "📤 Pushing primary tag (immutable): ${PRIMARY_TAG}"
+          if ! push_image "${PRIMARY_TAG}" true; then
+            echo "❌ Failed to push primary tag - this is required"
+            exit 1
           fi
           
-          echo "✅ Images pushed successfully"
+          # Push build tag (for traceability)
+          echo "📤 Pushing build tag (traceable): ${BUILD_TAG}"
+          push_image "${BUILD_TAG}" false || true
+          
+          # Push latest tag (mutable, may fail if immutable policy enabled)
+          # Latest tag is for convenience only, not used in GitOps
+          echo "📤 Pushing latest tag (mutable): ${LATEST_TAG}"
+          push_image "${LATEST_TAG}" false || true
+          
+          # BigTech ML Platform Standard: Always use PRIMARY_TAG (immutable) for GitOps
+          # This ensures reproducibility and immutability in production
+          GITOPS_TAG="${PRIMARY_TAG}"
+          
+          echo "✅ Image push completed"
+          echo "📋 GitOps will use tag: ${GITOPS_TAG} (immutable primary tag)"
+          echo "📋 Primary tag (immutable): ${PRIMARY_TAG}"
+          echo "📋 Build tag (traceable): ${BUILD_TAG}"
+          echo "📋 Latest tag (mutable, convenience only): ${LATEST_TAG}"
           
           # Output for GitOps update
           echo "repo_uri=${REPO_URI}" >> $GITHUB_OUTPUT
           echo "image_tag=${PRIMARY_TAG}" >> $GITHUB_OUTPUT
+          echo "build_tag=${BUILD_TAG}" >> $GITHUB_OUTPUT
           echo "latest_tag=${LATEST_TAG}" >> $GITHUB_OUTPUT
+          echo "gitops_tag=${GITOPS_TAG}" >> $GITHUB_OUTPUT
 
       - name: Check GitOps secrets
         id: gitops-check
@@ -268,7 +354,9 @@ jobs:
           ENV="${{ steps.env.outputs.env }}"
           OVERLAY="${{ steps.env.outputs.gitops_overlay }}"
           REPO_URI="${{ steps.docker.outputs.repo_uri }}"
-          IMAGE_TAG="${{ steps.docker.outputs.latest_tag }}"
+          # BigTech ML Platform Standard: Always use primary tag (immutable, full SHA) for GitOps
+          # This ensures reproducibility and immutability in production
+          IMAGE_TAG="${{ steps.docker.outputs.gitops_tag || steps.docker.outputs.image_tag }}"
           
           echo "📝 Updating GitOps repo..."
           echo "   Environment: ${ENV}"
@@ -354,28 +442,44 @@ jobs:
           COMPONENT: ${{ env.COMPONENT }}
           REPO_URI: ${{ steps.docker.outputs.repo_uri }}
           PRIMARY_TAG: ${{ steps.docker.outputs.image_tag }}
+          BUILD_TAG: ${{ steps.docker.outputs.build_tag }}
           LATEST_TAG: ${{ steps.docker.outputs.latest_tag }}
+          GITOPS_TAG: ${{ steps.docker.outputs.gitops_tag }}
           ENV: ${{ steps.env.outputs.env }}
           OVERLAY: ${{ steps.env.outputs.gitops_overlay }}
+          BUILD_TIMESTAMP: ${{ steps.env.outputs.build_timestamp }}
+          RUN_ID: ${{ steps.env.outputs.run_id }}
           GITOPS_UPDATED: ${{ steps.gitops-check.outputs.enabled == 'true' && github.event_name != 'pull_request' }}
         run: |
-          echo "### ✅ Build and Push Summary" >> $GITHUB_STEP_SUMMARY
+          echo "### ✅ Build and Push Summary (BigTech ML Platform)" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
           echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
           echo "| **Component** | \`${COMPONENT}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| **Environment** | \`${ENV}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Primary Tag** | \`${PRIMARY_TAG}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Latest Tag** | \`${LATEST_TAG}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Primary Tag** (immutable) | \`${PRIMARY_TAG}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Build Tag** (traceable) | \`${BUILD_TAG}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Latest Tag** (mutable) | \`${LATEST_TAG}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **GitOps Tag** | \`${GITOPS_TAG}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Build Timestamp** | \`${BUILD_TIMESTAMP}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Run ID** | \`${RUN_ID}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| **GitOps Updated** | $([ "${GITOPS_UPDATED}" == "true" ] && echo "✅ Yes" || echo "❌ No") |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Image URL:**" >> $GITHUB_STEP_SUMMARY
+          echo "**Image URLs:**" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-          echo "${REPO_URI}:${LATEST_TAG}" >> $GITHUB_STEP_SUMMARY
+          echo "${REPO_URI}:${PRIMARY_TAG}  # Immutable (primary)" >> $GITHUB_STEP_SUMMARY
+          echo "${REPO_URI}:${BUILD_TAG}    # Traceable (build)" >> $GITHUB_STEP_SUMMARY
+          echo "${REPO_URI}:${GITOPS_TAG}   # GitOps reference" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           if [ "${GITOPS_UPDATED}" == "true" ]; then
-            echo "✅ ArgoCD will automatically sync this image to \`${ENV}\` environment" >> $GITHUB_STEP_SUMMARY
+            echo "✅ **ArgoCD will automatically sync** this image to \`${ENV}\` environment" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "📋 **Tag Strategy (BigTech ML Platform Standard):**" >> $GITHUB_STEP_SUMMARY
+            echo "- **Primary Tag**: Full SHA (immutable, always unique per commit) - **Used in GitOps**" >> $GITHUB_STEP_SUMMARY
+            echo "- **Build Tag**: Short SHA + timestamp (traceable, for debugging)" >> $GITHUB_STEP_SUMMARY
+            echo "- **Latest Tag**: Branch-latest (mutable, convenience reference only)" >> $GITHUB_STEP_SUMMARY
+            echo "- **GitOps Tag**: \`${GITOPS_TAG}\` (immutable primary tag - ensures reproducibility)" >> $GITHUB_STEP_SUMMARY
           else
             echo "ℹ️  GitOps update skipped (PR or secrets not configured)" >> $GITHUB_STEP_SUMMARY
           fi
