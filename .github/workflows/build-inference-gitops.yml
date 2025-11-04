@@ -1,0 +1,382 @@
+# =============================================================================
+# Workflow: Build Inference Image and Update GitOps
+#
+# Purpose
+# - Build and push inference Docker image to ECR
+# - Automatically update image tag in GitOps repo for ArgoCD sync
+# - Triggered on push/PR to components/inference/ or main/develop branches
+#
+# Flow
+# 1. Build inference image with immutable tags
+# 2. Push to ECR
+# 3. Update GitOps repo with new image tag
+# 4. ArgoCD automatically syncs deployment to cluster
+# =============================================================================
+name: Build Inference and Update GitOps
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+    paths:
+      - 'components/inference/**'
+      - '.github/workflows/build-inference-gitops.yml'
+  pull_request:
+    branches:
+      - main
+      - develop
+    paths:
+      - 'components/inference/**'
+
+permissions:
+  id-token: write  # Required for OIDC authentication with AWS
+  contents: read   # Required for checkout
+
+env:
+  PYTHON_VERSION: "3.10"
+  COMPONENT: "inference"
+  REPO_PREFIX: "ml-fashion-recommender"
+
+jobs:
+  build-push-and-update-gitops:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+      - name: Derive environment and tag strategy
+        id: env
+        shell: bash
+        run: |
+          set -euo pipefail
+          
+          # Determine environment and tag prefix based on branch
+          if [[ "${GITHUB_REF##*/}" == "main" ]]; then
+            ENV="production"
+            TAG_PREFIX="main"
+            GITOPS_OVERLAY="production"
+          elif [[ "${GITHUB_REF##*/}" == "develop" ]]; then
+            ENV="staging"
+            TAG_PREFIX="develop"
+            GITOPS_OVERLAY="staging"
+          else
+            ENV="staging"
+            TAG_PREFIX="develop"
+            GITOPS_OVERLAY="staging"
+          fi
+          
+          SHORT_SHA="${GITHUB_SHA::7}"
+          FULL_SHA="${GITHUB_SHA}"
+          
+          # Generate immutable tags
+          if [ "${{ github.event_name }}" == "pull_request" ]; then
+            PRIMARY_TAG="pr-${{ github.event.pull_request.number }}-${SHORT_SHA}"
+            LATEST_TAG="${TAG_PREFIX}-latest"
+          else
+            PRIMARY_TAG="${TAG_PREFIX}-${SHORT_SHA}"
+            LATEST_TAG="${TAG_PREFIX}-latest"
+          fi
+          
+          echo "env=${ENV}" >> $GITHUB_OUTPUT
+          echo "tag_prefix=${TAG_PREFIX}" >> $GITHUB_OUTPUT
+          echo "sha7=${SHORT_SHA}" >> $GITHUB_OUTPUT
+          echo "full_sha=${FULL_SHA}" >> $GITHUB_OUTPUT
+          echo "primary_tag=${PRIMARY_TAG}" >> $GITHUB_OUTPUT
+          echo "latest_tag=${LATEST_TAG}" >> $GITHUB_OUTPUT
+          echo "gitops_overlay=${GITOPS_OVERLAY}" >> $GITHUB_OUTPUT
+          
+          echo "📋 Environment: ${ENV}"
+          echo "📋 Primary Tag: ${PRIMARY_TAG}"
+          echo "📋 Latest Tag: ${LATEST_TAG}"
+
+      - name: Load AWS configuration (Secrets-only, Zero-Trust)
+        id: aws-config-loader
+        env:
+          AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+          AWS_IAM_ROLE_ARN: ${{ secrets.AWS_IAM_ROLE_ARN }}
+          AWS_ECR_REGISTRY: ${{ secrets.AWS_ECR_REGISTRY }}
+        run: |
+          set -euo pipefail
+          
+          # Validate all required secrets are present
+          MISSING_SECRETS=()
+          
+          if [ -z "${AWS_ACCOUNT_ID:-}" ] || [ "${AWS_ACCOUNT_ID}" = "null" ]; then
+            MISSING_SECRETS+=("AWS_ACCOUNT_ID")
+          fi
+          
+          if [ -z "${AWS_REGION:-}" ] || [ "${AWS_REGION}" = "null" ]; then
+            MISSING_SECRETS+=("AWS_REGION")
+          fi
+          
+          if [ -z "${AWS_IAM_ROLE_ARN:-}" ] || [ "${AWS_IAM_ROLE_ARN}" = "null" ]; then
+            MISSING_SECRETS+=("AWS_IAM_ROLE_ARN")
+          fi
+          
+          if [ -z "${AWS_ECR_REGISTRY:-}" ] || [ "${AWS_ECR_REGISTRY}" = "null" ]; then
+            MISSING_SECRETS+=("AWS_ECR_REGISTRY")
+          fi
+          
+          if [ ${#MISSING_SECRETS[@]} -gt 0 ]; then
+            echo "❌ Error: Missing required GitHub Secrets:" >&2
+            printf "   - %s\n" "${MISSING_SECRETS[@]}" >&2
+            exit 1
+          fi
+          
+          # Validate formats
+          if [[ ! "$AWS_ACCOUNT_ID" =~ ^[0-9]{12}$ ]]; then
+            echo "❌ Error: Invalid account_id format: $AWS_ACCOUNT_ID" >&2
+            exit 1
+          fi
+          
+          if [[ ! "$AWS_REGION" =~ ^[a-z]{2}-[a-z]+-[0-9]+$ ]]; then
+            echo "❌ Error: Invalid region format: $AWS_REGION" >&2
+            exit 1
+          fi
+          
+          if [[ ! "$AWS_IAM_ROLE_ARN" =~ ^arn:aws:iam::[0-9]{12}:role/ ]]; then
+            echo "❌ Error: Invalid IAM role ARN format: $AWS_IAM_ROLE_ARN" >&2
+            exit 1
+          fi
+          
+          if [[ ! "$AWS_ECR_REGISTRY" =~ ^[0-9]{12}\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com$ ]]; then
+            echo "❌ Error: Invalid ECR registry format: $AWS_ECR_REGISTRY" >&2
+            exit 1
+          fi
+          
+          # Mask sensitive values
+          echo "::add-mask::$AWS_ACCOUNT_ID"
+          echo "::add-mask::$AWS_IAM_ROLE_ARN"
+          echo "::add-mask::$AWS_ECR_REGISTRY"
+          
+          echo "✅ AWS configuration loaded from GitHub Secrets"
+          
+          # Output values
+          echo "account_id=${AWS_ACCOUNT_ID}" >> $GITHUB_OUTPUT
+          echo "region=${AWS_REGION}" >> $GITHUB_OUTPUT
+          echo "iam_role_arn=${AWS_IAM_ROLE_ARN}" >> $GITHUB_OUTPUT
+          echo "ecr_registry=${AWS_ECR_REGISTRY}" >> $GITHUB_OUTPUT
+
+      - name: Configure AWS credentials (OIDC AssumeRole)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ steps.aws-config-loader.outputs.iam_role_arn }}
+          aws-region: ${{ steps.aws-config-loader.outputs.region }}
+          role-session-name: GitHubActions-${{ github.run_id }}-${{ github.run_attempt }}
+          retry-max-attempts: 0
+          disable-retry: true
+
+      - name: Verify caller identity
+        run: aws sts get-caller-identity
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push inference image
+        id: docker
+        env:
+          ECR_REGISTRY: ${{ steps.aws-config-loader.outputs.ecr_registry }}
+          REGION: ${{ steps.aws-config-loader.outputs.region }}
+          COMPONENT: ${{ env.COMPONENT }}
+          REPO_PREFIX: ${{ env.REPO_PREFIX }}
+          PRIMARY_TAG: ${{ steps.env.outputs.primary_tag }}
+          LATEST_TAG: ${{ steps.env.outputs.latest_tag }}
+          FULL_SHA: ${{ steps.env.outputs.full_sha }}
+        run: |
+          set -euo pipefail
+          
+          REPO_URI="${ECR_REGISTRY}/${REPO_PREFIX}/${COMPONENT}"
+          
+          echo "🔨 Building inference image..."
+          echo "   Repository: ${REPO_URI}"
+          echo "   Primary Tag: ${PRIMARY_TAG}"
+          echo "   Latest Tag: ${LATEST_TAG}"
+          
+          # Validate component directory exists
+          if [ ! -d "components/${COMPONENT}" ]; then
+            echo "❌ Error: Component directory not found: components/${COMPONENT}"
+            exit 1
+          fi
+          
+          # Validate Dockerfile exists
+          if [ ! -f "components/${COMPONENT}/Dockerfile" ]; then
+            echo "❌ Error: Dockerfile not found: components/${COMPONENT}/Dockerfile"
+            exit 1
+          fi
+          
+          # Build Docker image with immutable tags
+          docker build \
+            -t "${REPO_URI}:${PRIMARY_TAG}" \
+            -t "${REPO_URI}:${LATEST_TAG}" \
+            -t "${REPO_URI}:${FULL_SHA}" \
+            -f "components/${COMPONENT}/Dockerfile" \
+            "components/${COMPONENT}/"
+          
+          echo "✅ Build completed"
+          
+          # Push images
+          echo "🚀 Pushing images to ECR..."
+          docker push "${REPO_URI}:${PRIMARY_TAG}"
+          docker push "${REPO_URI}:${LATEST_TAG}"
+          
+          # Push full SHA tag only if not PR
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            docker push "${REPO_URI}:${FULL_SHA}"
+          fi
+          
+          echo "✅ Images pushed successfully"
+          
+          # Output for GitOps update
+          echo "repo_uri=${REPO_URI}" >> $GITHUB_OUTPUT
+          echo "image_tag=${PRIMARY_TAG}" >> $GITHUB_OUTPUT
+          echo "latest_tag=${LATEST_TAG}" >> $GITHUB_OUTPUT
+
+      - name: Check GitOps secrets
+        id: gitops-check
+        env:
+          GITOPS_TOKEN: ${{ secrets.GITOPS_TOKEN }}
+          GITOPS_REPO: ${{ secrets.GITOPS_REPO }}
+        run: |
+          set -euo pipefail
+          
+          if [[ -z "${GITOPS_TOKEN:-}" ]] || [[ "${GITOPS_TOKEN}" == "null" ]]; then
+            echo "⚠️  Warning: GITOPS_TOKEN not set, skipping GitOps update"
+            echo "enabled=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
+          if [[ -z "${GITOPS_REPO:-}" ]] || [[ "${GITOPS_REPO}" == "null" ]]; then
+            echo "⚠️  Warning: GITOPS_REPO not set, skipping GitOps update"
+            echo "enabled=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
+          echo "✅ GitOps secrets found"
+          echo "enabled=true" >> $GITHUB_OUTPUT
+
+      - name: Update GitOps repo image tag
+        env:
+          GITOPS_TOKEN: ${{ secrets.GITOPS_TOKEN }}
+          GITOPS_REPO: ${{ secrets.GITOPS_REPO }}
+        if: steps.gitops-check.outputs.enabled == 'true' && github.event_name != 'pull_request'
+        run: |
+          set -euo pipefail
+          
+          ENV="${{ steps.env.outputs.env }}"
+          OVERLAY="${{ steps.env.outputs.gitops_overlay }}"
+          REPO_URI="${{ steps.docker.outputs.repo_uri }}"
+          IMAGE_TAG="${{ steps.docker.outputs.latest_tag }}"
+          
+          echo "📝 Updating GitOps repo..."
+          echo "   Environment: ${ENV}"
+          echo "   Overlay: ${OVERLAY}"
+          echo "   Image: ${REPO_URI}:${IMAGE_TAG}"
+          
+          # Clone GitOps repo
+          WORKDIR=$(mktemp -d)
+          git config --global user.name "gh-actions-bot"
+          git config --global user.email "gh-actions-bot@users.noreply.github.com"
+          
+          # Extract repo URL and add token
+          if [[ "${GITOPS_REPO}" == https://* ]]; then
+            REPO_URL="${GITOPS_REPO/https:\/\//https://${GITOPS_TOKEN}@}"
+          elif [[ "${GITOPS_REPO}" == http://* ]]; then
+            REPO_URL="${GITOPS_REPO/http:\/\//http://${GITOPS_TOKEN}@}"
+          else
+            # Assume format: github.com/owner/repo or owner/repo
+            REPO_URL="https://${GITOPS_TOKEN}@${GITOPS_REPO}"
+          fi
+          
+          echo "🔐 Cloning GitOps repo..."
+          git clone "${REPO_URL}" "${WORKDIR}/gitops" || {
+            echo "❌ Failed to clone GitOps repo"
+            exit 1
+          }
+          
+          cd "${WORKDIR}/gitops"
+          
+          # Update kustomization.yaml
+          KUSTOMIZATION_FILE="apps/ml-recommendation-inference/overlays/${OVERLAY}/kustomization.yaml"
+          
+          if [ ! -f "${KUSTOMIZATION_FILE}" ]; then
+            echo "❌ Error: File not found: ${KUSTOMIZATION_FILE}"
+            exit 1
+          fi
+          
+          echo "📝 Updating ${KUSTOMIZATION_FILE}..."
+          
+          # Use yq if available, otherwise use sed
+          if command -v yq >/dev/null 2>&1; then
+            # Update newName (ECR registry URL)
+            yq eval -i ".images[] |= select(.name==\"inference\").newName = \"${REPO_URI}\"" "${KUSTOMIZATION_FILE}"
+            # Update newTag
+            yq eval -i ".images[] |= select(.name==\"inference\").newTag = \"${IMAGE_TAG}\"" "${KUSTOMIZATION_FILE}"
+          else
+            # Fallback: use sed to update lines
+            # Update newName (match the line with newName)
+            sed -i "s|newName:.*ml-fashion-recommender/inference|newName: ${REPO_URI}|g" "${KUSTOMIZATION_FILE}"
+            # Update newTag (match the line with newTag after inference)
+            sed -i "/name: inference/,/newTag:/ s|newTag:.*|newTag: ${IMAGE_TAG}|g" "${KUSTOMIZATION_FILE}"
+          fi
+          
+          # Verify changes
+          echo "📋 Updated kustomization.yaml:"
+          grep -A 3 "name: inference" "${KUSTOMIZATION_FILE}" || true
+          
+          # Commit and push
+          git add "${KUSTOMIZATION_FILE}"
+          
+          # Check if there are changes
+          if git diff --staged --quiet; then
+            echo "ℹ️  No changes to commit (tag already up-to-date)"
+          else
+            COMMIT_MSG="ci: update inference image to ${IMAGE_TAG} for ${ENV} (${GITHUB_SHA::7})"
+            git commit -m "${COMMIT_MSG}"
+            
+            echo "🚀 Pushing changes to GitOps repo..."
+            git push origin HEAD || {
+              echo "❌ Failed to push to GitOps repo"
+              exit 1
+            }
+            
+            echo "✅ GitOps repo updated successfully"
+            echo "📋 Commit: ${COMMIT_MSG}"
+          fi
+          
+          # Cleanup
+          rm -rf "${WORKDIR}"
+
+      - name: Build Summary
+        env:
+          COMPONENT: ${{ env.COMPONENT }}
+          REPO_URI: ${{ steps.docker.outputs.repo_uri }}
+          PRIMARY_TAG: ${{ steps.docker.outputs.image_tag }}
+          LATEST_TAG: ${{ steps.docker.outputs.latest_tag }}
+          ENV: ${{ steps.env.outputs.env }}
+          OVERLAY: ${{ steps.env.outputs.gitops_overlay }}
+          GITOPS_UPDATED: ${{ steps.gitops-check.outputs.enabled == 'true' && github.event_name != 'pull_request' }}
+        run: |
+          echo "### ✅ Build and Push Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| **Component** | \`${COMPONENT}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Environment** | \`${ENV}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Primary Tag** | \`${PRIMARY_TAG}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Latest Tag** | \`${LATEST_TAG}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **GitOps Updated** | $([ "${GITOPS_UPDATED}" == "true" ] && echo "✅ Yes" || echo "❌ No") |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Image URL:**" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          echo "${REPO_URI}:${LATEST_TAG}" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ "${GITOPS_UPDATED}" == "true" ]; then
+            echo "✅ ArgoCD will automatically sync this image to \`${ENV}\` environment" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "ℹ️  GitOps update skipped (PR or secrets not configured)" >> $GITHUB_STEP_SUMMARY
+          fi
+

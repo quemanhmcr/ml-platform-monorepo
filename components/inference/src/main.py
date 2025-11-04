@@ -8,12 +8,15 @@ Mục đích:
 Endpoints:
 - GET /healthz: Kiểm tra tình trạng dịch vụ.
 - POST /predict: Nhận payload mẫu và trả về kết quả mô phỏng.
+
+Version: 1.0.1 - Updated for EKS deployment testing
 """
 
 from fastapi import FastAPI
 from pydantic import BaseModel
 from typing import Any, Dict
 import os
+from datetime import datetime
 
 
 class PredictRequest(BaseModel):
@@ -22,7 +25,7 @@ class PredictRequest(BaseModel):
     top_k: int = 5
 
 
-app = FastAPI(title="HM Inference Service", version="1.0.0")
+app = FastAPI(title="HM Inference Service", version="1.0.1")
 
 
 @app.get("/healthz")
@@ -30,7 +33,9 @@ def healthz() -> Dict[str, Any]:
     return {
         "status": "ok",
         "service": "inference",
-        "version": os.environ.get("APP_VERSION", "unknown"),
+        "version": os.environ.get("APP_VERSION", "1.0.1"),
+        "timestamp": datetime.utcnow().isoformat(),
+        "deployed": True,
     }
 
 

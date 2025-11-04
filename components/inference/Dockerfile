@@ -24,5 +24,5 @@ ENV PYTHONPATH=/app
 EXPOSE 8080
 
 # Entry point: chạy FastAPI bằng Uvicorn
-ENV APP_VERSION=1.0.0
+ENV APP_VERSION=1.0.1
 ENTRYPOINT ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8080"]
