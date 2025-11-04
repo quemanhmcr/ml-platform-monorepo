@@ -3,23 +3,18 @@
 # =============================================================================
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
-
 namespace: ml-inference-prod
-
 resources:
   - ../../base
-
 # Image override for production
 images:
   - name: inference
-    newName: 123456789012.dkr.ecr.ap-southeast-2.amazonaws.com/ml-fashion-recommender/inference
-    newTag: main-latest  # Use main-latest or specific SHA tag
-
+    newName: 465002806239.dkr.ecr.ap-southeast-2.amazonaws.com/ml-fashion-recommender/inference
+    newTag: main-latest # Use main-latest or specific SHA tag
 # Replica override for production
 replicas:
   - name: ml-recommendation-inference
     count: 5
-
 # Resource patches for production
 patches:
   - patch: |-
@@ -38,7 +33,6 @@ patches:
     target:
       kind: Deployment
       name: ml-recommendation-inference
-  
   # Production IAM role for AWS IRSA
   - patch: |-
       - op: replace
@@ -47,12 +41,9 @@ patches:
     target:
       kind: ServiceAccount
       name: ml-inference-sa
-
 # Labels and annotations for production
 commonLabels:
   environment: production
   tier: production
-
 commonAnnotations:
   argocd.argoproj.io/sync-wave: "0"
-
