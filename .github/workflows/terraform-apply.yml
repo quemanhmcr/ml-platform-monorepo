@@ -136,7 +136,7 @@ jobs:
         id: plan
         run: |
           terraform plan \
-            -var="environment=${{ steps.env.outputs.environment }}" \
+            -var-file=terraform.tfvars \
             -out=tfplan \
             -no-color \
             -input=false | tee plan_output.txt
@@ -248,7 +248,7 @@ jobs:
       - name: Terraform Plan
         run: |
           terraform plan \
-            -var="environment=${{ steps.env.outputs.environment }}" \
+            -var-file=terraform.tfvars \
             -out=tfplan \
             -no-color \
             -input=false
