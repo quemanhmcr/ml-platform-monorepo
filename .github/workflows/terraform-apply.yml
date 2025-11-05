@@ -94,7 +94,23 @@ jobs:
           terraform_wrapper: false
 
       - name: Terraform Init
-        run: terraform init
+        shell: bash
+        env:
+          TF_BACKEND_BUCKET: ${{ secrets.TF_BACKEND_BUCKET }}
+          TF_BACKEND_KEY: ${{ secrets.TF_BACKEND_KEY }}
+          TF_BACKEND_REGION: ${{ secrets.TF_BACKEND_REGION }}
+        run: |
+          set -euo pipefail
+          if [[ -n "${TF_BACKEND_BUCKET:-}" && -n "${TF_BACKEND_KEY:-}" && -n "${TF_BACKEND_REGION:-}" ]]; then
+            terraform init \
+              -backend-config="bucket=${TF_BACKEND_BUCKET}" \
+              -backend-config="key=${TF_BACKEND_KEY}" \
+              -backend-config="region=${TF_BACKEND_REGION}" \
+              -input=false
+          else
+            echo "No S3 backend secrets provided; using local backend"
+            terraform init -backend=false -input=false
+          fi
 
       - name: Terraform Validate
         run: terraform validate
@@ -122,7 +138,8 @@ jobs:
           terraform plan \
             -var="environment=${{ steps.env.outputs.environment }}" \
             -out=tfplan \
-            -no-color | tee plan_output.txt
+            -no-color \
+            -input=false | tee plan_output.txt
         continue-on-error: false
 
       - name: Comment PR with Plan
@@ -194,7 +211,23 @@ jobs:
           terraform_wrapper: false
 
       - name: Terraform Init
-        run: terraform init
+        shell: bash
+        env:
+          TF_BACKEND_BUCKET: ${{ secrets.TF_BACKEND_BUCKET }}
+          TF_BACKEND_KEY: ${{ secrets.TF_BACKEND_KEY }}
+          TF_BACKEND_REGION: ${{ secrets.TF_BACKEND_REGION }}
+        run: |
+          set -euo pipefail
+          if [[ -n "${TF_BACKEND_BUCKET:-}" && -n "${TF_BACKEND_KEY:-}" && -n "${TF_BACKEND_REGION:-}" ]]; then
+            terraform init \
+              -backend-config="bucket=${TF_BACKEND_BUCKET}" \
+              -backend-config="key=${TF_BACKEND_KEY}" \
+              -backend-config="region=${TF_BACKEND_REGION}" \
+              -input=false
+          else
+            echo "No S3 backend secrets provided; using local backend"
+            terraform init -backend=false -input=false
+          fi
 
       - name: Terraform Validate
         run: terraform validate
@@ -217,7 +250,8 @@ jobs:
           terraform plan \
             -var="environment=${{ steps.env.outputs.environment }}" \
             -out=tfplan \
-            -no-color
+            -no-color \
+            -input=false
 
       - name: Terraform Apply
         id: apply
