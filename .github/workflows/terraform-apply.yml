@@ -1,8 +1,28 @@
 name: Terraform Apply
 
-# Trigger on push to main or manual workflow dispatch
 on:
   workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy (staging/production)'
+        required: true
+        type: choice
+        options:
+          - staging
+          - production
+      terraform_action:
+        description: 'Terraform action to perform'
+        required: true
+        type: choice
+        options:
+          - plan
+          - apply
+        default: 'plan'
+      auto_approve:
+        description: 'Auto approve apply (use with caution!)'
+        required: false
+        type: boolean
+        default: false
   push:
     branches:
       - main
@@ -17,9 +37,9 @@ env:
 
 jobs:
   terraform:
-    name: Terraform Apply - Production
+    name: Terraform ${{ inputs.terraform_action || 'plan' }}
     runs-on: ubuntu-latest
-    environment: production
+    environment: ${{ inputs.environment || 'production' }}
 
     permissions:
       contents: read
@@ -59,15 +79,17 @@ jobs:
 
       - name: Terraform Plan
         id: plan
+        if: (inputs.terraform_action == 'plan' || inputs.terraform_action == 'apply') || github.event_name == 'push'
         run: |
           terraform plan \
             -var-file=terraform.tfvars \
-            -var="environment=production" \
+            -var="environment=${{ inputs.environment || 'production' }}" \
             -out=tfplan \
             -no-color
         working-directory: ./
 
       - name: Terraform Plan Status
+        if: inputs.terraform_action == 'plan' || github.event_name == 'push'
         run: |
           echo "## Terraform Plan Output" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
@@ -76,10 +98,17 @@ jobs:
 
       - name: Terraform Apply
         id: apply
-        run: terraform apply -auto-approve -no-color tfplan
+        if: inputs.terraform_action == 'apply'
+        run: |
+          if [ "${{ inputs.auto_approve }}" == "true" ]; then
+            terraform apply -auto-approve -no-color tfplan
+          else
+            terraform apply -no-color tfplan
+          fi
         working-directory: ./
 
       - name: Terraform Outputs
+        if: inputs.terraform_action == 'apply'
         run: |
           echo "## Terraform Outputs" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
@@ -88,7 +117,7 @@ jobs:
         working-directory: ./
 
       - name: Comment Plan on PR
-        if: github.event_name == 'pull_request'
+        if: inputs.terraform_action == 'plan' && github.event_name == 'pull_request'
         uses: actions/github-script@v7
         env:
           PLAN: "terraform\n${{ steps.plan.outputs.stdout }}"
@@ -108,7 +137,7 @@ jobs:
 
             </details>
 
-            *Pusher: @${{ github.actor }}, Environment: production, Workflow: \`${{ github.workflow }}\`*`;
+            *Pusher: @${{ github.actor }}, Action: \`${{ inputs.terraform_action }}\`, Environment: \`${{ inputs.environment }}\`, Workflow: \`${{ github.workflow }}\`*`;
 
             github.rest.issues.createComment({
               issue_number: context.issue.number,

@@ -2,17 +2,22 @@
 
 ## Required GitHub Secrets
 
-Để workflow có thể chạy, bạn cần setup các secrets sau trong GitHub repository:
+Để workflow có thể chạy, bạn cần setup secret sau trong GitHub repository:
 
 ### 1. AWS IAM Role ARN (for GitHub Actions) - REQUIRED
 - **Secret Name**: `AWS_IAM_ROLE_ARN`
 - **Value**: ARN của IAM role để GitHub Actions assume role
 - **Example**: `arn:aws:iam::465002806239:role/github-actions-role`
 
-### 2. AWS Region - REQUIRED
-- **Secret Name**: `AWS_REGION`
-- **Value**: AWS region để deploy infrastructure
-- **Example**: `ap-southeast-2`
+### 2. Node Group Role ARN (optional - đã có trong terraform.tfvars)
+- **Secret Name**: `NODE_GROUP_ROLE_ARN`
+- **Value**: `arn:aws:iam::465002806239:role/ml-fashion-recommender-infra-live-role-iam`
+- **Note**: Đã có trong terraform.tfvars, không cần secret này nữa
+
+### 3. Cluster Service Role ARN (optional - đã có trong terraform.tfvars)
+- **Secret Name**: `CLUSTER_SERVICE_ROLE_ARN`
+- **Value**: ARN của cluster service role (hoặc để empty để auto-create)
+- **Note**: Đã có trong terraform.tfvars, không cần secret này nữa
 
 ## Cách Setup Secrets
 
