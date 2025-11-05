@@ -23,6 +23,13 @@ on:
         required: false
         type: boolean
         default: false
+  push:
+    branches:
+      - main
+    paths:
+      - '**/*.tf'
+      - '.github/workflows/**'
+      - 'terraform.tfvars'
 
 env:
   AWS_REGION: ${{ secrets.AWS_REGION }}
@@ -30,9 +37,9 @@ env:
 
 jobs:
   terraform:
-    name: Terraform ${{ inputs.terraform_action }}
+    name: Terraform ${{ inputs.terraform_action || 'plan' }}
     runs-on: ubuntu-latest
-    environment: ${{ inputs.environment }}
+    environment: ${{ inputs.environment || 'production' }}
 
     permissions:
       contents: read
@@ -72,17 +79,17 @@ jobs:
 
       - name: Terraform Plan
         id: plan
-        if: inputs.terraform_action == 'plan' || inputs.terraform_action == 'apply'
+        if: (inputs.terraform_action == 'plan' || inputs.terraform_action == 'apply') || github.event_name == 'push'
         run: |
           terraform plan \
             -var-file=terraform.tfvars \
-            -var="environment=${{ inputs.environment }}" \
+            -var="environment=${{ inputs.environment || 'production' }}" \
             -out=tfplan \
             -no-color
         working-directory: ./
 
       - name: Terraform Plan Status
-        if: inputs.terraform_action == 'plan'
+        if: inputs.terraform_action == 'plan' || github.event_name == 'push'
         run: |
           echo "## Terraform Plan Output" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
