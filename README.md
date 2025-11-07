@@ -1,201 +1,473 @@
-# H&M Deep Learning - ML Monorepo
+# H&M Fashion Recommendation - ML Platform
 
-Monorepo chuẩn BigTech cho dự án Machine Learning/Deep Learning.
+> Enterprise-grade Machine Learning Monorepo for Fashion Recommendation System
 
-## Cấu trúc dự án
+[![CI/CD](https://github.com/your-org/h&m_deeplearning/actions/workflows/build-inference-gitops.yml/badge.svg)](https://github.com/your-org/h&m_deeplearning/actions)
+[![Python](https://img.shields.io/badge/python-3.10-blue.svg)](https://www.python.org/downloads/)
+[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+
+## 📋 Table of Contents
+
+- [Overview](#overview)
+- [Architecture](#architecture)
+- [Components](#components)
+- [Getting Started](#getting-started)
+- [Development](#development)
+- [CI/CD](#cicd)
+- [Deployment](#deployment)
+- [Configuration](#configuration)
+- [Contributing](#contributing)
+
+## 🎯 Overview
+
+This repository implements a production-ready Machine Learning platform for fashion recommendation, following enterprise monorepo patterns and BigTech ML platform standards. The system orchestrates a complete ML pipeline from data ingestion to model serving, with automated CI/CD, GitOps integration, and immutable deployment strategies.
+
+### Key Features
+
+- 🏗️ **Monorepo Architecture**: Unified codebase for all ML components with shared tooling
+- 🔒 **Security-First**: OIDC authentication, zero-trust config management, encrypted secrets
+- 🚀 **Immutable Deployments**: SHA-based tagging, reproducible builds, zero-downtime updates
+- 🔄 **GitOps Integration**: Automated ArgoCD sync, declarative infrastructure
+- 📦 **Container-First**: All components containerized with optimized Docker images
+- ⚡ **Smart CI/CD**: Change detection, parallel builds, incremental deployments
+- 📊 **ML Pipeline**: End-to-end pipeline from raw data to production inference
+
+## 🏛️ Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        ML Platform Pipeline                      │
+└─────────────────────────────────────────────────────────────────┘
+
+┌──────────────┐   ┌──────────────┐   ┌──────────────┐
+│   Data       │   │   Data       │   │   Data       │
+│  Ingestion   │──▶│ Processing   │──▶│     EDA      │
+│  (Raw S3)    │   │ (Processed)  │   │  (Reports)   │
+└──────────────┘   └──────────────┘   └──────────────┘
+                                                  │
+                                                  ▼
+┌──────────────┐                           ┌──────────────┐
+│   Training   │◀──────────────────────────│   Inference  │
+│  (Artifacts) │                           │  (FastAPI)   │
+└──────────────┘                           └──────────────┘
+      │                                            │
+      └────────────────────────────────────────────┘
+                      ECR Registry
+```
+
+### Component Flow
+
+1. **Data Ingestion** → Raw data collection and storage (S3 `raw/`)
+2. **Data Processing** → Data cleaning, transformation (S3 `processed/`)
+3. **Data EDA** → Exploratory analysis and reporting
+4. **Training** → Model training and artifact generation (S3 `artifacts/`)
+5. **Inference** → Real-time prediction service (FastAPI)
+
+## 📦 Components
+
+### 1. Data Ingestion (`components/data_ingestion/`)
+
+**Purpose**: Collect raw data from multiple sources and store in S3 raw bucket.
+
+**Features**:
+- Multi-source data collection
+- S3 raw bucket storage
+- Configurable ingestion schedules
+- Data validation and schema enforcement
+
+**Input**: External data sources  
+**Output**: S3 `raw/` prefix
+
+### 2. Data Processing (`components/data_processing/`)
+
+**Purpose**: Transform raw data into processed format for ML training.
+
+**Features**:
+- Data cleaning and normalization
+- Feature engineering
+- Schema validation
+- Incremental processing support
+
+**Input**: S3 `raw/` prefix  
+**Output**: S3 `processed/` prefix
+
+### 3. Data EDA (`components/data_eda/`)
+
+**Purpose**: Exploratory Data Analysis and statistical insights.
+
+**Features**:
+- Automated statistical analysis
+- Visualization generation
+- Data quality reports
+- Distribution analysis
+
+**Input**: S3 `processed/` prefix  
+**Output**: EDA reports and visualizations
+
+### 4. Training (`components/train/`)
+
+**Purpose**: Train machine learning models on processed data.
+
+**Features**:
+- Model training orchestration
+- Hyperparameter tuning
+- Model versioning
+- Artifact management
+
+**Input**: S3 `processed/` prefix  
+**Output**: Model artifacts in S3 `artifacts/` prefix
+
+### 5. Inference (`components/inference/`)
+
+**Purpose**: Serve trained models via REST API for real-time predictions.
+
+**Features**:
+- FastAPI-based REST API
+- Health check endpoints
+- Model loading from S3
+- Request/response validation
+- Horizontal scaling support
+
+**API Endpoints**:
+- `GET /healthz` - Health check and service status
+- `POST /predict` - Prediction endpoint
+
+**Input**: Model artifacts from S3  
+**Output**: REST API predictions
+
+## 🚀 Getting Started
+
+### Prerequisites
+
+- **Python**: 3.10+
+- **Docker**: 20.10+
+- **AWS CLI**: 2.0+ (for local development)
+- **Make**: (optional, for convenience commands)
+
+### Local Development Setup
+
+1. **Clone the repository**:
+   ```bash
+   git clone https://github.com/your-org/h&m_deeplearning.git
+   cd h&m_deeplearning
+   ```
+
+2. **Configure AWS credentials** (for local development):
+   ```bash
+   export AWS_ACCOUNT_ID="123456789012"
+   export AWS_REGION="ap-southeast-2"
+   export AWS_IAM_ROLE_ARN="arn:aws:iam::123456789012:role/dev-role"
+   export AWS_ECR_REGISTRY="123456789012.dkr.ecr.ap-southeast-2.amazonaws.com"
+   ```
+
+3. **Build a component locally**:
+   ```bash
+   # Using Makefile
+   make build-component COMPONENT=inference
+   
+   # Or directly with Docker
+   cd components/inference
+   docker build -t inference:local .
+   ```
+
+4. **Run a component**:
+   ```bash
+   docker run -p 8080:8080 \
+     -e AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID \
+     -e AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY \
+     -e AWS_REGION=$AWS_REGION \
+     inference:local
+   ```
+
+5. **Test the inference API**:
+   ```bash
+   curl http://localhost:8080/healthz
+   ```
+
+## 💻 Development
+
+### Project Structure
 
 ```
 .
-├── components/              # Các ML components
-│   ├── data_ingestion/     # Đổ data raw từ nhiều nguồn vào S3
+├── components/              # ML components
+│   ├── data_ingestion/     # Data collection component
 │   │   ├── src/           # Source code
-│   │   ├── Dockerfile     # Docker image definition
+│   │   ├── Dockerfile     # Container definition
 │   │   ├── requirements.txt
-│   │   ├── config.yaml    # Component configuration
-│   │   └── .dockerignore
-│   ├── data_processing/    # Xử lý dữ liệu từ raw sang processed
-│   ├── data_eda/           # Exploratory Data Analysis
-│   ├── train/              # Training models
-│   └── inference/          # Model inference và serving
+│   │   └── config.yaml    # Component config
+│   ├── data_processing/    # Data transformation
+│   ├── data_eda/           # Exploratory analysis
+│   ├── train/              # Model training
+│   └── inference/          # Model serving
 ├── config/                 # Configuration files
-│   ├── aws.json           # AWS configuration
-│   └── aws.schema.json    # AWS config JSON schema
-├── .github/workflows/      # CI/CD pipelines
-│   └── build-and-push-ecr.yml
-├── Makefile               # Build commands
-├── pyproject.toml         # Python project configuration
+│   ├── aws.schema.json    # AWS config schema
+│   └── README.md          # Config documentation
+├── docs/                   # Documentation
+│   └── workflows/         # CI/CD documentation
+├── .github/workflows/      # GitHub Actions
+├── Makefile               # Build automation
+├── pyproject.toml         # Python project config
 └── README.md
 ```
 
-## Components
+### Adding a New Component
 
-### 1. Data Ingestion
-- **Mục đích**: Đổ data raw từ nhiều nguồn vào S3 raw bucket
-- **Output**: Data trong S3 bucket tại `raw/` prefix
+1. **Create component directory**:
+   ```bash
+   mkdir -p components/new_component/src
+   ```
 
-### 2. Data Processing
-- **Mục đích**: Xử lý dữ liệu từ raw sang processed format
-- **Input**: `raw/` prefix trong S3
-- **Output**: `processed/` prefix trong S3
+2. **Add component files**:
+   - `Dockerfile` - Container definition
+   - `requirements.txt` - Python dependencies
+   - `config.yaml` - Component configuration
+   - `src/main.py` - Component entry point
 
-### 3. Data EDA
-- **Mục đích**: Exploratory Data Analysis
-- **Input**: `processed/` prefix trong S3
-- **Output**: EDA reports và visualizations
+3. **Update Makefile** (optional):
+   Add component to `COMPONENTS` variable
 
-### 4. Train
-- **Mục đích**: Train ML models
-- **Input**: `processed/` prefix trong S3
-- **Output**: Model artifacts tại `artifacts/` prefix trong S3
+4. **Update CI/CD workflow**:
+   Add component name to detection regex in `.github/workflows/build-and-push-ecr.yml`
 
-### 5. Inference
-- **Mục đích**: Model inference và serving
-- **Input**: Model artifacts từ S3
-- **Output**: API endpoints cho predictions
+5. **Create ECR repository**:
+   ```bash
+   aws ecr create-repository \
+     --repository-name ml-fashion-recommender/new_component \
+     --region ap-southeast-2
+   ```
 
-## AWS Configuration
+### Code Quality
 
-### 🔒 Security-First Approach
+The project uses standard Python tooling:
 
-**Configuration Priority (Highest to Lowest):**
-1. **GitHub Secrets** (recommended for production) 🔐
-2. **Environment Variables**
-3. **config/aws.json** (fallback for local development)
+- **Black**: Code formatting (`line-length=100`)
+- **isort**: Import sorting (Black-compatible)
+- **pylint**: Static analysis
+- **mypy**: Type checking
+- **pytest**: Testing framework
 
-### Setup Options
-
-#### Option 1: GitHub Secrets (Recommended)
-
-1. Go to **Repository Settings → Secrets and variables → Actions**
-2. Add these secrets (ECR-only permissions):
-   - `AWS_ACCOUNT_ID`
-   - `AWS_REGION`
-   - `AWS_IAM_ROLE_ARN`
-   - `AWS_ECR_REGISTRY`
-
-3. Workflow tự động sử dụng secrets nếu có
-
-#### Option 2: config/aws.json (Local Development)
-
+Format code:
 ```bash
-# Copy example file
-cp config/aws.example.json config/aws.json
-
-# Fill in your values (file is gitignored)
-# For production, use GitHub Secrets instead!
+black components/
+isort components/
 ```
 
-#### Option 3: Environment Variables
+## 🔄 CI/CD
 
-```bash
-export AWS_ACCOUNT_ID="123456789012"
-export AWS_REGION="ap-southeast-2"
-# ... etc
+### Workflow Overview
+
+The CI/CD pipeline implements enterprise-grade practices:
+
+- **Change Detection**: Only builds components that changed
+- **Parallel Builds**: Matrix strategy for concurrent builds
+- **Immutable Tags**: SHA-based tagging for reproducibility
+- **GitOps Integration**: Automated ArgoCD sync
+- **Security**: OIDC authentication, encrypted secrets
+
+### Workflow: Build and Push to ECR
+
+**Trigger**: Push/PR to `main` or `develop` branches
+
+**Jobs**:
+1. **detect-changes**: Identifies changed components via git diff
+2. **build-and-push**: Builds and pushes Docker images to ECR
+
+**Image Tagging Strategy** (Immutable BigTech Standard):
+
+| Branch/Event | Primary Tag | Additional Tags |
+|-------------|-------------|-----------------|
+| `main` | `main-<full-sha>` | `main-<short-sha>`, `main-latest` |
+| `develop` | `develop-<full-sha>` | `develop-<short-sha>`, `develop-latest` |
+| Pull Request | `pr-<number>-<full-sha>` | `pr-<number>-<short-sha>`, `pr-<number>` |
+| Feature Branch | `<branch>-<full-sha>` | `<branch>-<short-sha>` |
+
+**Why Immutable Tags?**
+- ✅ Reproducibility: Exact version tracking
+- ✅ Rollback: Instant version reversion
+- ✅ Auditability: Clear deployment history
+- ✅ No race conditions: Unique tags prevent conflicts
+
+### Workflow: Build Inference and Update GitOps
+
+**Trigger**: Changes to `components/inference/` or workflow file
+
+**Jobs**:
+1. **build-push-and-update-gitops**:
+   - Builds inference Docker image
+   - Pushes to ECR with immutable tags
+   - Updates GitOps repository with new image tag
+   - Triggers ArgoCD auto-sync
+
+**GitOps Integration**:
+- Automatically updates `apps/ml-recommendation-inference/overlays/{production|staging}/kustomization.yaml`
+- ArgoCD detects changes and syncs deployment
+- Zero-downtime rolling updates
+
+### GitHub Secrets Setup
+
+**Required Secrets** (Repository Settings → Secrets and variables → Actions):
+
+| Secret Name | Description | Example |
+|------------|-------------|---------|
+| `AWS_ACCOUNT_ID` | AWS Account ID (12 digits) | `123456789012` |
+| `AWS_REGION` | AWS Region | `ap-southeast-2` |
+| `AWS_IAM_ROLE_ARN` | IAM Role ARN for OIDC | `arn:aws:iam::123456789012:role/github-actions-ecr-role` |
+| `AWS_ECR_REGISTRY` | ECR Registry URL | `123456789012.dkr.ecr.ap-southeast-2.amazonaws.com` |
+| `GITOPS_REPO_TOKEN` | GitOps repo access token | `ghp_xxxxxxxxxxxx` |
+
+## 📊 Deployment
+
+### ECR Registry
+
+All images are stored in ECR under the namespace:
+```
+<account>.dkr.ecr.<region>.amazonaws.com/ml-fashion-recommender/<component>:<tag>
 ```
 
-### Config Structure
+### GitOps Deployment (Production)
 
-- `config/aws.json`: Actual config (gitignored if contains real values)
-- `config/aws.example.json`: Example config (safe to commit)
-- `config/aws.json.template`: Template with env var placeholders
+The inference service is deployed via GitOps using ArgoCD:
+
+1. **CI/CD builds and pushes image** to ECR
+2. **CI/CD updates GitOps repo** with new image tag
+3. **ArgoCD detects change** and syncs deployment
+4. **Kubernetes rolling update** with zero downtime
+
+See [`hm-mlops-gitops`](../hm-mlops-gitops) repository for GitOps configuration.
+
+## ⚙️ Configuration
+
+### Security-First Configuration
+
+**Priority Order** (Highest to Lowest):
+1. **GitHub Secrets** (CI/CD) - Recommended for production 🔐
+2. **Environment Variables** (Local development)
+3. **Config Files** (Local fallback only)
+
+**CI/CD**: Uses GitHub Secrets exclusively (zero-trust approach)  
+**Local Dev**: Uses environment variables or `config/aws.json`
+
+### Configuration Files
+
 - `config/aws.schema.json`: JSON schema for validation
+- `config/README.md`: Detailed configuration documentation
 
-See [config/README.md](config/README.md) for detailed documentation.
+**⚠️ Important**: Never commit sensitive values. Use GitHub Secrets for production.
 
-### Validation
+### Component Configuration
 
-Config được tự động validate với:
-- ✅ JSON syntax validation
-- ✅ Required fields checking
-- ✅ Format validation (account ID, region, ARN patterns)
-- ✅ Priority-based loading (Secrets > ENV > JSON)
+Each component has its own `config.yaml`:
+```yaml
+component:
+  name: inference
+  version: "1.0.0"
 
-### Local Development
+aws:
+  s3_bucket: "${S3_DATA_LAKE_BUCKET}"
+  artifacts_prefix: "${S3_ARTIFACTS_PREFIX}"
 
-Config được validate và load tự động trong CI/CD workflow. Không cần scripts riêng.
+inference:
+  api_host: "0.0.0.0"
+  api_port: 8080
 
-Để test config local, bạn có thể validate JSON syntax:
-```bash
-jq empty config/aws.json
+logging:
+  level: "INFO"
 ```
 
-### CI/CD Integration
+## 🧪 Testing
 
-Workflow tự động:
-1. ✅ Load từ GitHub Secrets (nếu có) hoặc config file
-2. ✅ Validate tất cả config values
-3. ✅ Sử dụng IAM role cho authentication
-4. ✅ Create ECR repositories với security best practices
-5. ✅ Retry logic với error handling
+### Running Tests
 
-## CI/CD
-
-CI/CD pipeline với các tính năng:
-
-### Smart Build Detection
-- ✅ Chỉ build components có thay đổi (git diff)
-- ✅ Build tất cả nếu `config/aws.json` thay đổi
-- ✅ Hỗ trợ cả push và pull request events
-
-### Robust Configuration Management
-- ✅ Validate AWS config trước khi sử dụng
-- ✅ Đọc toàn bộ config từ `config/aws.json` (không hardcode)
-- ✅ Error handling và validation chi tiết
-- ✅ Auto-create ECR repositories nếu thiếu
-
-### Security & Reliability
-- ✅ IAM role-based authentication
-- ✅ Retry logic cho push operations (3 attempts)
-- ✅ Image scanning enabled trên ECR
-- ✅ Encryption enabled (AES256)
-- ✅ Role session naming với run ID
-
-### Workflow trigger
-- Push vào `main` hoặc `develop` branch
-- Pull requests vào `main` hoặc `develop` branch
-
-### Image Tagging (Immutable BigTech ML Standard)
-
-**Quy ước tagging immutable (không dùng `latest`):**
-
-- **Main branch**: `main-<short-sha>` (primary) + `main-latest` (additional)
-- **Develop branch**: `develop-<short-sha>` (primary) + `develop-latest` (additional)
-- **Pull requests**: `pr-<pr-number>-<short-sha>` (primary) + `pr-<pr-number>` (additional)
-- **Feature branches**: `<branch-name>-<short-sha>` (primary) + full SHA (additional)
-
-**Ví dụ:**
-- Main: `data_ingestion:main-a1b2c3d` (immutable production tag)
-- Develop: `data_processing:develop-x9y8z7w`
-- PR #42: `train:pr-42-f5e4d3c`
-
-**Lý do không dùng `latest`:**
-- ✅ Immutable tags cho reproducibility
-- ✅ Dễ rollback và track versions
-- ✅ Tránh race conditions
-- ✅ Production-ready best practice
-
-## Development
-
-### Local development
 ```bash
-# Build image cho một component
-cd components/data_ingestion
-docker build -t data_ingestion:local .
+# Run all tests
+pytest
 
-# Run component
-docker run --env-file .env data_ingestion:local
+# Run tests for specific component
+pytest components/inference/tests/
 
-# Hoặc sử dụng Makefile
-make build-component COMPONENT=data_ingestion
-make push-component COMPONENT=data_ingestion TAG=latest
+# Run with coverage
+pytest --cov=components/inference/src
 ```
 
-### Thêm dependencies
-Cập nhật `requirements.txt` trong component tương ứng.
+### Component Testing
 
-## Notes
+Each component should include:
+- Unit tests (`tests/test_*.py`)
+- Integration tests (if applicable)
+- API tests (for inference service)
 
-- Tất cả components sử dụng Python 3.10
-- Images được push lên ECR registry: `465002806239.dkr.ecr.ap-southeast-2.amazonaws.com`
-- CI/CD chỉ build và push components có thay đổi (thông minh)
+## 📚 Documentation
 
+- [Configuration Guide](config/README.md)
+- [CI/CD Workflows](docs/workflows/build-and-push-ecr.md)
+- [Component Development Guide](docs/COMPONENT_DEVELOPMENT.md) (TODO)
+
+## 🤝 Contributing
+
+### Development Workflow
+
+1. **Create feature branch**:
+   ```bash
+   git checkout -b feature/your-feature-name
+   ```
+
+2. **Make changes** and commit:
+   ```bash
+   git commit -m "feat: add new feature"
+   ```
+
+3. **Push and create PR**:
+   ```bash
+   git push origin feature/your-feature-name
+   ```
+
+4. **CI/CD automatically**:
+   - Builds changed components
+   - Runs tests
+   - Updates preview environment (if configured)
+
+### Commit Convention
+
+We follow [Conventional Commits](https://www.conventionalcommits.org/):
+
+- `feat`: New feature
+- `fix`: Bug fix
+- `docs`: Documentation
+- `style`: Code style changes
+- `refactor`: Code refactoring
+- `test`: Test additions/changes
+- `chore`: Maintenance tasks
+
+### Code Review Process
+
+1. All PRs require at least one approval
+2. CI/CD must pass before merge
+3. Code must follow style guidelines
+4. Tests must be added for new features
+
+## 📝 License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+## 👥 Team
+
+- **ML Engineering**: Model development and training
+- **Platform Engineering**: Infrastructure and CI/CD
+- **DevOps**: Deployment and operations
+
+## 🔗 Related Repositories
+
+- [GitOps Configuration](../hm-mlops-gitops) - ArgoCD and Kubernetes manifests
+- [Infrastructure as Code](../hm-infra-live) - Terraform infrastructure
+
+## 📞 Support
+
+For issues and questions:
+- Create an issue in this repository
+- Contact the ML Platform team
+- Check documentation in `docs/` directory
+
+---
+
+**Built with ❤️ by the H&M ML Platform Team**
