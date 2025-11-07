@@ -38,29 +38,20 @@
 name: Build and Push to ECR
 
 on:
-  # NOTE: TẠM THỜI VÔ HIỆU HOÁ TRIGGER TỰ ĐỘNG CHO WORKFLOW LEGACY NÀY
-  # Lý do: Tránh xung đột khi test CICD mới (build-and-release.yml) cập nhật tag vào GitOps.
-  # Cách sử dụng tạm thời: chỉ chạy thủ công khi thật sự cần kiểm thử pipeline cũ.
-  # Khi muốn bật lại triggers tự động, bỏ comment khối bên dưới.
-  workflow_dispatch:
-    inputs:
-      reason:
-        description: "Chạy thủ công workflow legacy để kiểm thử (tạm bị vô hiệu hoá mặc định)"
-        required: false
-
-  # push:
-  #   branches:
-  #     - main
-  #     - develop
-  #   paths:
-  #     - 'components/**'
-  #     - '.github/workflows/build-and-push-ecr.yml'
-  # pull_request:
-  #   branches:
-  #     - main
-  #     - develop
-  #   paths:
-  #     - 'components/**'
+  push:
+    branches:
+      - main
+      - develop
+    paths:
+      - 'components/**'
+      - '.github/workflows/build-and-push-ecr.yml'
+  pull_request:
+    branches:
+      - main
+      - develop
+    paths:
+      - 'components/**'
+      - '.github/workflows/build-and-push-ecr.yml'
 
 env:
   PYTHON_VERSION: "3.10"
