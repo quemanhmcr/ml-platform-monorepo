@@ -38,17 +38,7 @@ resource "aws_eks_cluster" "main" {
     resources = ["secrets"]
   }
 
-  dynamic "addon" {
-    for_each = var.cluster_addons
-    content {
-      name                    = addon.key
-      addon_version           = try(addon.value.addon_version, null)
-      service_account_role_arn = try(addon.value.service_account_role_arn, null)
-      resolve_conflicts       = try(addon.value.resolve_conflicts, "OVERWRITE")
-      preserve                = try(addon.value.preserve, false)
-      most_recent             = try(addon.value.most_recent, false)
-    }
-  }
+  # Addons are managed via separate aws_eks_addon resources
 
   depends_on = [
     aws_iam_role_policy_attachment.cluster_AmazonEKSClusterPolicy,
@@ -56,6 +46,20 @@ resource "aws_eks_cluster" "main" {
   ]
 
   tags = var.tags
+}
+
+# EKS Addons
+resource "aws_eks_addon" "this" {
+  for_each = var.cluster_addons
+
+  cluster_name             = aws_eks_cluster.main.name
+  addon_name               = each.key
+  addon_version            = try(each.value.addon_version, null)
+  service_account_role_arn = try(each.value.service_account_role_arn, null)
+  resolve_conflicts        = try(each.value.resolve_conflicts, "OVERWRITE")
+  preserve                 = try(each.value.preserve, false)
+
+  depends_on = [aws_eks_cluster.main]
 }
 
 # EKS Cluster IAM Role (if not provided)
@@ -191,8 +195,6 @@ resource "aws_security_group" "node" {
       cidr_blocks                   = lookup(ingress.value, "cidr_blocks", null)
       security_groups               = lookup(ingress.value, "security_groups", null)
       self                          = lookup(ingress.value, "self", null)
-      source_cluster_security_group = lookup(ingress.value, "source_cluster_security_group", null)
-      type                          = ingress.value.type
     }
   }
 
@@ -202,5 +204,21 @@ resource "aws_security_group" "node" {
     },
     var.tags
   )
+}
+
+# Additional ingress rules sourced from cluster security group
+resource "aws_security_group_rule" "node_additional_ingress_from_cluster_sg" {
+  for_each = {
+    for k, v in var.node_security_group_additional_rules : k => v
+    if try(v.source_cluster_security_group, false)
+  }
+
+  type                     = "ingress"
+  description              = try(each.value.description, null)
+  from_port                = each.value.from_port
+  to_port                  = each.value.to_port
+  protocol                 = each.value.protocol
+  security_group_id        = aws_security_group.node.id
+  source_security_group_id = aws_security_group.cluster.id
 }
 
