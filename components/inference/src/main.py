@@ -9,7 +9,7 @@ Endpoints:
 - GET /healthz: Kiểm tra tình trạng dịch vụ.
 - POST /predict: Nhận payload mẫu và trả về kết quả mô phỏng.
 
-Version: 1.0.1 - Updated for EKS deployment testing
+Version: 1.0.2 - Testing ArgoCD auto-sync capability
 """
 
 from fastapi import FastAPI
@@ -25,7 +25,7 @@ class PredictRequest(BaseModel):
     top_k: int = 5
 
 
-app = FastAPI(title="HM Inference Service", version="1.0.1")
+app = FastAPI(title="HM Inference Service", version="1.0.2")
 
 
 @app.get("/healthz")
@@ -33,9 +33,10 @@ def healthz() -> Dict[str, Any]:
     return {
         "status": "ok",
         "service": "inference",
-        "version": os.environ.get("APP_VERSION", "1.0.1"),
+        "version": os.environ.get("APP_VERSION", "1.0.2"),
         "timestamp": datetime.utcnow().isoformat(),
         "deployed": True,
+        "sync_test": "ArgoCD auto-sync verified",
     }
 
 
