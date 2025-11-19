@@ -1,0 +1,52 @@
+# =============================================================================
+# Staging Overlay for ML Recommendation Inference
+# =============================================================================
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: ml-inference-staging
+
+resources:
+  - ../../base
+
+# Image override for staging
+images:
+  - name: inference
+    newName: 123456789012.dkr.ecr.ap-southeast-2.amazonaws.com/ml-fashion-recommender/inference
+    newTag: develop-latest  # Use develop-latest for staging
+
+# Replica override for staging
+replicas:
+  - name: ml-recommendation-inference
+    count: 2
+
+# Resource patches for staging
+patches:
+  - patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/limits/cpu
+        value: "2000m"
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/limits/memory
+        value: "2Gi"
+    target:
+      kind: Deployment
+      name: ml-recommendation-inference
+  
+  # Staging IAM role for AWS IRSA
+  - patch: |-
+      - op: replace
+        path: /metadata/annotations/eks.amazonaws.com~1role-arn
+        value: "arn:aws:iam::123456789012:role/ml-inference-staging-role"
+    target:
+      kind: ServiceAccount
+      name: ml-inference-sa
+
+# Labels and annotations for staging
+commonLabels:
+  environment: staging
+  tier: staging
+
+commonAnnotations:
+  argocd.argoproj.io/sync-wave: "0"
+

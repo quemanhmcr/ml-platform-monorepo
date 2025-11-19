@@ -1,0 +1,62 @@
+# =============================================================================
+# Production Overlay for ML Training Workflow Circle
+# =============================================================================
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: ml-training-prod
+
+resources:
+  - ../../base
+
+# Image overrides for production components
+images:
+  - name: data-ingestion
+    newName: 123456789012.dkr.ecr.ap-southeast-2.amazonaws.com/ml-fashion-recommender/data_ingestion
+    newTag: main-latest
+  - name: data-processing
+    newName: 123456789012.dkr.ecr.ap-southeast-2.amazonaws.com/ml-fashion-recommender/data_processing
+    newTag: main-latest
+  - name: data-eda
+    newName: 123456789012.dkr.ecr.ap-southeast-2.amazonaws.com/ml-fashion-recommender/data_eda
+    newTag: main-latest
+  - name: train-model
+    newName: 123456789012.dkr.ecr.ap-southeast-2.amazonaws.com/ml-fashion-recommender/train
+    newTag: main-latest
+
+# Production IAM role for AWS IRSA
+patches:
+  - patch: |-
+      - op: replace
+        path: /metadata/annotations/eks.amazonaws.com~1role-arn
+        value: "arn:aws:iam::123456789012:role/ml-training-prod-role"
+    target:
+      kind: ServiceAccount
+      name: ml-training-sa
+  
+  # Production resource limits for training
+  - patch: |-
+      - op: replace
+        path: /spec/templates/3/container/resources/limits/cpu
+        value: "8000m"
+      - op: replace
+        path: /spec/templates/3/container/resources/limits/memory
+        value: "16Gi"
+      - op: replace
+        path: /spec/templates/3/container/resources/requests/cpu
+        value: "2000m"
+      - op: replace
+        path: /spec/templates/3/container/resources/requests/memory
+        value: "8Gi"
+    target:
+      kind: WorkflowTemplate
+      name: ml-training-pipeline
+
+# Labels and annotations for production
+commonLabels:
+  environment: production
+  tier: production
+
+commonAnnotations:
+  argocd.argoproj.io/sync-wave: "0"
+

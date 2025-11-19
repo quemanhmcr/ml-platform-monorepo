@@ -1,0 +1,21 @@
+# =============================================================================
+# Base Configuration for ML Training Workflow Circle (Argo Workflows)
+# =============================================================================
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: ml-training
+
+resources:
+  - workflow-template.yaml
+  - cron-workflow.yaml
+  - serviceaccount.yaml
+
+commonLabels:
+  app: ml-training-workflow-circle
+  component: training
+  managed-by: argocd
+
+commonAnnotations:
+  argocd.argoproj.io/sync-wave: "0"
+

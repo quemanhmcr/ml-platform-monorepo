@@ -1,0 +1,53 @@
+# =============================================================================
+# ApplicationSet for ML Recommendation Inference - Unified (Production + Staging)
+# =============================================================================
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: ml-recommendation-inference
+  namespace: argocd
+spec:
+  generators:
+    - list:
+        elements:
+          - env: production
+            namespace: ml-inference-prod
+            path: apps/ml-recommendation-inference/overlays/production
+            targetRevision: HEAD
+          - env: staging
+            namespace: ml-inference-staging
+            path: apps/ml-recommendation-inference/overlays/staging
+            targetRevision: HEAD
+  template:
+    metadata:
+      name: 'ml-recommendation-{{env}}-inference'
+      labels:
+        app: ml-recommendation-inference
+        environment: '{{env}}'
+        managed-by: argocd-applicationset
+      annotations:
+        argocd.argoproj.io/sync-wave: "1"
+    spec:
+      project: default
+      source:
+        repoURL: https://github.com/manhque-lab/ml-fashion-recommender-gitops
+        targetRevision: '{{targetRevision}}'
+        path: '{{path}}'
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: '{{namespace}}'
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+          allowEmpty: false
+        syncOptions:
+          - CreateNamespace=true
+          - PrunePropagationPolicy=foreground
+          - PruneLast=true
+        retry:
+          limit: 5
+          backoff:
+            duration: 5s
+            factor: 2
+            maxDuration: 3m

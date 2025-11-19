@@ -1,0 +1,22 @@
+# =============================================================================
+# Logging Platform Manifests
+# 
+# Place your logging stack manifests here (e.g., Elasticsearch, Fluentd, Kibana)
+# This is a placeholder structure.
+# =============================================================================
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: logging
+
+resources:
+  # TODO: Add Elasticsearch, Fluentd, Kibana, etc.
+  # - elasticsearch.yaml
+  # - fluentd.yaml
+  # - kibana.yaml
+
+commonLabels:
+  app: logging
+  component: platform
+  managed-by: argocd
+

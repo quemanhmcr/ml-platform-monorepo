@@ -1,0 +1,49 @@
+# =============================================================================
+# Staging Environment Configuration
+# =============================================================================
+environment: staging
+
+# Image tags for staging
+imageTags:
+  strategy: "develop-latest"  # Use develop-latest for staging
+  fallback: "develop-.*"
+
+# Resource defaults
+resources:
+  inference:
+    replicas: 2
+    requests:
+      cpu: "500m"
+      memory: "1Gi"
+    limits:
+      cpu: "2000m"
+      memory: "2Gi"
+  
+  training:
+    replicas: 1
+    requests:
+      cpu: "1000m"
+      memory: "4Gi"
+    limits:
+      cpu: "4000m"
+      memory: "8Gi"
+
+# AWS Configuration
+aws:
+  accountId: "123456789012"
+  region: "ap-southeast-2"
+  iamRoles:
+    inference: "arn:aws:iam::123456789012:role/ml-inference-staging-role"
+    training: "arn:aws:iam::123456789012:role/ml-training-staging-role"
+  
+  s3:
+    dataLakeBucket: "ml-fashion-data-lake-staging"
+    processedPrefix: "processed"
+    artifactsPrefix: "artifacts"
+
+# Monitoring
+monitoring:
+  enabled: true
+  scrapeInterval: "60s"
+  alertingEnabled: false  # Disable alerts in staging
+

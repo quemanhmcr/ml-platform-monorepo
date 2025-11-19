@@ -1,0 +1,56 @@
+# =============================================================================
+# CronWorkflow for Scheduled ML Training Pipeline (Daily)
+#
+# Purpose:
+#   Chạy ML training pipeline tự động hàng ngày để:
+#   - Ingest data mới từ các sources
+#   - Process và clean data
+#   - Thực hiện EDA
+#   - Train model mới và evaluate
+#   - Register model vào Model Registry nếu tốt hơn baseline
+#
+# Schedule:
+#   - Chạy mỗi ngày lúc 2:00 AM UTC
+#   - Format: "minute hour day month weekday"
+#   - 0 2 * * * = Every day at 2:00 AM UTC
+#
+# Workflow Steps:
+#   1. Data Ingestion: Thu thập raw data từ APIs/databases
+#   2. Data Processing: Clean và transform data
+#   3. Data EDA: Exploratory Data Analysis
+#   4. Train Model: Train và evaluate model
+#      - Nếu model tốt hơn baseline → Register vào Model Registry
+#      - Model artifacts được lưu vào S3 artifacts/{date}/models/
+#
+# Retry Policy:
+#   - Retry tối đa 3 lần nếu workflow fails
+#   - Retry cho tất cả errors
+# =============================================================================
+apiVersion: argoproj.io/v1alpha1
+kind: CronWorkflow
+metadata:
+  name: ml-training-daily
+spec:
+  # Schedule: Every day at 2 AM UTC
+  # Format: "minute hour day month weekday"
+  # 0 2 * * * = Every day at 2:00 AM UTC
+  schedule: "0 2 * * *"
+  timezone: "UTC"
+  workflowSpec:
+    entrypoint: training-pipeline
+    serviceAccountName: ml-training-sa
+    workflowTemplateRef:
+      name: ml-training-pipeline
+    arguments:
+      parameters:
+        - name: data-version
+          value: "latest"
+        - name: model-version
+          value: "" # Auto-generated
+        - name: hyperparameters
+          value: '{"learning_rate": 0.001, "batch_size": 32, "epochs": 10}'
+    # Retry policy
+    retryStrategy:
+      limit: 3
+      retryPolicy: "Always"
+

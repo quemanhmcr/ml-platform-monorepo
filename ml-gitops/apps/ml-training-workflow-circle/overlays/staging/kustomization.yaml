@@ -1,0 +1,44 @@
+# =============================================================================
+# Staging Overlay for ML Training Workflow Circle
+# =============================================================================
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: ml-training-staging
+
+resources:
+  - ../../base
+
+# Image overrides for staging components
+images:
+  - name: data-ingestion
+    newName: 123456789012.dkr.ecr.ap-southeast-2.amazonaws.com/ml-fashion-recommender/data_ingestion
+    newTag: develop-latest
+  - name: data-processing
+    newName: 123456789012.dkr.ecr.ap-southeast-2.amazonaws.com/ml-fashion-recommender/data_processing
+    newTag: develop-latest
+  - name: data-eda
+    newName: 123456789012.dkr.ecr.ap-southeast-2.amazonaws.com/ml-fashion-recommender/data_eda
+    newTag: develop-latest
+  - name: train-model
+    newName: 123456789012.dkr.ecr.ap-southeast-2.amazonaws.com/ml-fashion-recommender/train
+    newTag: develop-latest
+
+# Staging IAM role for AWS IRSA
+patches:
+  - patch: |-
+      - op: replace
+        path: /metadata/annotations/eks.amazonaws.com~1role-arn
+        value: "arn:aws:iam::123456789012:role/ml-training-staging-role"
+    target:
+      kind: ServiceAccount
+      name: ml-training-sa
+
+# Labels and annotations for staging
+commonLabels:
+  environment: staging
+  tier: staging
+
+commonAnnotations:
+  argocd.argoproj.io/sync-wave: "0"
+

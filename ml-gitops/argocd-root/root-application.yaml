@@ -1,0 +1,69 @@
+# =============================================================================
+# ArgoCD Root Application
+#
+# This is the "mother application" that you apply manually to bootstrap
+# the entire GitOps setup. It manages all other ArgoCD Applications.
+#
+# How to apply:
+#   kubectl apply -f argocd-root/root-application.yaml
+#
+# This file should be the ONLY file you apply manually to the cluster.
+# =============================================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: gitops-root
+  namespace: argocd
+  # Finalizer ensures Application is not deleted until all resources are cleaned up
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  labels:
+    app.kubernetes.io/name: gitops-root
+    app.kubernetes.io/part-of: gitops-platform
+spec:
+  project: default
+  
+  # Source: This GitOps repository
+  source:
+    repoURL: https://github.com/manhque-lab/ml-fashion-recommender-gitops
+    targetRevision: HEAD
+    path: bootstrap
+  
+  # Destination: ArgoCD namespace (manages other Applications)
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  
+  # Sync policy: Auto-sync with pruning and self-heal
+  syncPolicy:
+    automated:
+      prune: true      # Delete resources that are no longer in Git
+      selfHeal: true   # Automatically correct drift
+      allowEmpty: false
+    syncOptions:
+      - CreateNamespace=true
+      - PrunePropagationPolicy=foreground
+      - PruneLast=true
+    
+    # Retry failed syncs
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m
+  
+  # Ignore differences in certain fields (e.g., status fields managed by controllers)
+  ignoreDifferences:
+    - group: argoproj.io
+      kind: Application
+      jsonPointers:
+        - /status
+  
+  # Health checks
+  healthChecks:
+    - apiVersion: argoproj.io/v1alpha1
+      kind: Application
+      name: gitops-root
+      namespace: argocd
+

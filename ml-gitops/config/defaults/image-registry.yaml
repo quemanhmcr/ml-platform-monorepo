@@ -1,0 +1,24 @@
+# =============================================================================
+# Default Image Registry Configuration
+# 
+# This file contains default image registry settings used across all apps.
+# Override in environment-specific configs if needed.
+# =============================================================================
+imageRegistry:
+  baseURL: "123456789012.dkr.ecr.ap-southeast-2.amazonaws.com"
+  repoPrefix: "ml-fashion-recommender"
+  defaultTagStrategy: "semver"  # semver | sha | branch-sha
+  
+# Component image mappings
+components:
+  data_ingestion:
+    image: "data_ingestion"
+  data_processing:
+    image: "data_processing"
+  data_eda:
+    image: "data_eda"
+  train:
+    image: "train"
+  inference:
+    image: "inference"
+

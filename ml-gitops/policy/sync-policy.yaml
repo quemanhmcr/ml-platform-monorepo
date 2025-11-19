@@ -1,0 +1,38 @@
+# =============================================================================
+# Default Sync Policy for ArgoCD Applications
+# 
+# This policy defines default sync behavior that can be inherited
+# by all ArgoCD Applications in this repository.
+# =============================================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: sync-policy-template
+  annotations:
+    argocd.argoproj.io/sync-policy-template: "true"
+spec:
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+      allowEmpty: false
+    syncOptions:
+      - CreateNamespace=true
+      - PrunePropagationPolicy=foreground
+      - PruneLast=true
+      - RespectIgnoreDifferences=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m
+    # Health checks
+    healthChecks:
+      - apiVersion: apps/v1
+        kind: Deployment
+        checkName: deployment-ready
+      - apiVersion: v1
+        kind: Service
+        checkName: service-available
+

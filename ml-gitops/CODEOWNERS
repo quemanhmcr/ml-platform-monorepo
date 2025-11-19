@@ -1,0 +1,12 @@
+# CODEOWNERS enforce mandatory reviews for protected paths
+# Format: pattern  owners
+
+# Global owners (platform team)
+* @manhque-lab/platform-admins @manhque-lab/platform-ops
+
+# Critical paths
+/argocd-root/** @manhque-lab/platform-admins
+/bootstrap/**    @manhque-lab/platform-admins @manhque-lab/platform-ops
+/apps/**         @manhque-lab/platform-ops
+/manifests/**    @manhque-lab/platform-ops
+/.github/**      @manhque-lab/platform-admins

@@ -1,0 +1,22 @@
+# =============================================================================
+# Monitoring Platform Manifests
+# 
+# Place your monitoring stack manifests here (e.g., Prometheus, Grafana)
+# This is a placeholder structure.
+# =============================================================================
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: monitoring
+
+resources:
+  # TODO: Add Prometheus operator, Grafana, AlertManager, etc.
+  # - prometheus-operator.yaml
+  # - grafana.yaml
+  # - alertmanager.yaml
+
+commonLabels:
+  app: monitoring
+  component: platform
+  managed-by: argocd
+

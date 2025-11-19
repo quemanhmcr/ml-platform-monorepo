@@ -1,0 +1,23 @@
+# Kubernetes secrets (if stored locally)
+*.secret.yaml
+*.secret.yml
+
+# Temporary files
+*.tmp
+*.bak
+*.swp
+*~
+
+# IDE files
+.vscode/
+.idea/
+*.code-workspace
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Local config overrides
+local-config.yaml
+.override/
+

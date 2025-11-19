@@ -1,0 +1,13 @@
+# =============================================================================
+# ConfigMap for ML Training Workflow
+# =============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ml-training-config
+data:
+  S3_DATA_LAKE_BUCKET: "ml-fashion-data-lake"
+  S3_PROCESSED_PREFIX: "processed"
+  S3_ARTIFACTS_PREFIX: "artifacts"
+  LOG_LEVEL: "INFO"
+

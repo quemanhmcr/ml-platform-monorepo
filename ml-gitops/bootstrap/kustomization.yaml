@@ -1,0 +1,15 @@
+# =============================================================================
+# Bootstrap Kustomization
+# 
+# This is the entry point for the ArgoCD Root Application.
+# It includes all ApplicationSets that manage the applications.
+# =============================================================================
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - apps/ml-recommendation-inference.yaml
+  - apps/ml-training-workflow-circle.yaml
+  - platform/monitoring-app.yaml
+  - platform/logging-app.yaml
+

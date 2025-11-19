@@ -1,0 +1,53 @@
+# =============================================================================
+# ApplicationSet for ML Training Workflow Circle - Unified (Production + Staging)
+# =============================================================================
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: ml-training-workflow-circle
+  namespace: argocd
+spec:
+  generators:
+    - list:
+        elements:
+          - env: production
+            namespace: ml-training-prod
+            path: apps/ml-training-workflow-circle/overlays/production
+            targetRevision: HEAD
+          - env: staging
+            namespace: ml-training-staging
+            path: apps/ml-training-workflow-circle/overlays/staging
+            targetRevision: HEAD
+  template:
+    metadata:
+      name: 'ml-training-workflow-{{env}}-circle'
+      labels:
+        app: ml-training-workflow-circle
+        environment: '{{env}}'
+        managed-by: argocd-applicationset
+      annotations:
+        argocd.argoproj.io/sync-wave: "1"
+    spec:
+      project: default
+      source:
+        repoURL: https://github.com/manhque-lab/ml-fashion-recommender-gitops
+        targetRevision: '{{targetRevision}}'
+        path: '{{path}}'
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: '{{namespace}}'
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+          allowEmpty: false
+        syncOptions:
+          - CreateNamespace=true
+          - PrunePropagationPolicy=foreground
+          - PruneLast=true
+        retry:
+          limit: 5
+          backoff:
+            duration: 5s
+            factor: 2
+            maxDuration: 3m
