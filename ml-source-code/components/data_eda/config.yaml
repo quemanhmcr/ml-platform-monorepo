@@ -1,0 +1,15 @@
+# Data EDA Configuration
+component:
+  name: data_eda
+  version: "1.0.0"
+
+aws:
+  s3_bucket: "${S3_DATA_LAKE_BUCKET}"
+  processed_prefix: "${S3_PROCESSED_PREFIX}"
+  artifacts_prefix: "${S3_ARTIFACTS_PREFIX}"
+
+eda:
+  # TODO: Add EDA configurations
+
+logging:
+  level: "INFO"

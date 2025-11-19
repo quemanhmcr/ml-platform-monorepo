@@ -1,0 +1,16 @@
+# Inference Configuration
+component:
+  name: inference
+  version: "1.0.0"
+
+aws:
+  s3_bucket: "${S3_DATA_LAKE_BUCKET}"
+  artifacts_prefix: "${S3_ARTIFACTS_PREFIX}"
+
+inference:
+  api_host: "0.0.0.0"
+  api_port: 8080
+  # TODO: Add inference configurations
+
+logging:
+  level: "INFO"

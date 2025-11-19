@@ -1,0 +1,15 @@
+# Data Ingestion Configuration
+component:
+  name: data_ingestion
+  version: "1.0.0"
+
+sources:
+  - type: "placeholder"
+    config: {}
+    
+aws:
+  s3_bucket: "${S3_DATA_LAKE_BUCKET}"
+  raw_prefix: "${S3_RAW_PREFIX}"
+
+logging:
+  level: "INFO"

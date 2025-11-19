@@ -1,0 +1,15 @@
+# Data Processing Configuration
+component:
+  name: data_processing
+  version: "1.0.0"
+
+aws:
+  s3_bucket: "${S3_DATA_LAKE_BUCKET}"
+  raw_prefix: "${S3_RAW_PREFIX}"
+  processed_prefix: "${S3_PROCESSED_PREFIX}"
+
+processing:
+  # TODO: Add processing configurations
+
+logging:
+  level: "INFO"

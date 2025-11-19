@@ -1,0 +1,65 @@
+# Git
+.git
+.gitignore
+.github
+
+# Python
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+*.egg
+*.egg-info
+dist
+build
+
+# Virtual environments
+venv/
+env/
+.venv
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Jupyter
+.ipynb_checkpoints
+*.ipynb
+
+# Environment
+.env
+.env.local
+
+# Logs
+*.log
+logs/
+
+# Data (local)
+data/
+*.csv
+*.parquet
+
+# Model artifacts (local)
+models/
+artifacts/
+checkpoints/
+
+# Documentation
+*.md
+!README.md
+
+# CI/CD
+.github/
+
+# Config (will be mounted at runtime if needed)
+config/
+
+# Temporary
+tmp/
+temp/
+*.tmp
+

@@ -1,0 +1,65 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": ["account_id", "region", "iam_role_arn", "ecr_registry", "s3"],
+  "properties": {
+    "account_id": {
+      "type": "string",
+      "pattern": "^[0-9]{12}$",
+      "description": "AWS Account ID (12 digits)"
+    },
+    "region": {
+      "type": "string",
+      "pattern": "^[a-z]{2}-[a-z]+-[0-9]+$",
+      "description": "AWS Region (e.g., ap-southeast-2)"
+    },
+    "iam_role_arn": {
+      "type": "string",
+      "pattern": "^arn:aws:iam::[0-9]{12}:role/[a-zA-Z0-9+=,.@_-]+$",
+      "description": "IAM Role ARN for GitHub Actions"
+    },
+    "ecr_registry": {
+      "type": "string",
+      "pattern": "^[0-9]{12}\\.dkr\\.ecr\\.[a-z0-9-]+\\.amazonaws\\.com$",
+      "description": "ECR Registry URL"
+    },
+    "s3": {
+      "type": "object",
+      "required": ["data_lake_bucket", "raw_prefix", "processed_prefix", "artifacts_prefix"],
+      "properties": {
+        "data_lake_bucket": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 63,
+          "description": "S3 Data Lake bucket name"
+        },
+        "raw_prefix": {
+          "type": "string",
+          "pattern": "^.*/$",
+          "description": "S3 prefix for raw data (must end with /)"
+        },
+        "interim_prefix": {
+          "type": "string",
+          "pattern": "^.*/$",
+          "description": "S3 prefix for interim data (must end with /)"
+        },
+        "processed_prefix": {
+          "type": "string",
+          "pattern": "^.*/$",
+          "description": "S3 prefix for processed data (must end with /)"
+        },
+        "artifacts_prefix": {
+          "type": "string",
+          "pattern": "^.*/$",
+          "description": "S3 prefix for model artifacts (must end with /)"
+        },
+        "emr_logs_prefix": {
+          "type": "string",
+          "pattern": "^.*/$",
+          "description": "S3 prefix for EMR logs (must end with /)"
+        }
+      }
+    }
+  }
+}
+

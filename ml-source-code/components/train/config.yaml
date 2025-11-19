@@ -1,0 +1,17 @@
+# Training Configuration
+component:
+  name: train
+  version: "1.0.0"
+
+aws:
+  s3_bucket: "${S3_DATA_LAKE_BUCKET}"
+  processed_prefix: "${S3_PROCESSED_PREFIX}"
+  artifacts_prefix: "${S3_ARTIFACTS_PREFIX}"
+
+training:
+  # TODO: Add training configurations
+  # model_type: ""
+  # hyperparameters: {}
+
+logging:
+  level: "INFO"

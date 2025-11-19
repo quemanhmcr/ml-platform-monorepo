@@ -1,0 +1,702 @@
+# =============================================================================
+# Workflow: Build and Push to ECR (ML Platform CI/CD)
+#
+# Purpose
+# - Build and push Docker images for ML components to AWS ECR using immutable tags.
+# - Automatically update image tags in GitOps repo for ArgoCD sync.
+# - Triggered only when relevant files change to minimize CI cost/time.
+#
+# Job Order
+# 1) detect-changes
+#    - Fast change detection for monorepo components.
+#    - Output: components (JSON array) -> drives matrix in build job.
+#    - Special cases: first commit, PR base, and config/aws.json force full build.
+#
+# 2) build-and-push
+#    - Matrix over changed components only.
+#    - Loads AWS config (ENV/secrets-first), assumes OIDC for credentials.
+#    - Builds images with immutable tags (branch + SHA variants).
+#    - Standardized ECR namespace: ml-fashion-recommender/<component>.
+#    - Pushes to ECR.
+#    - Updates GitOps repo with new image tags (for non-PR builds).
+#    - Summarizes artifacts and GitOps updates.
+#
+# GitOps Integration
+# - Automatically updates kustomization.yaml in GitOps repo after successful push.
+# - Component mapping:
+#   - inference -> apps/ml-recommendation-inference/overlays/{env}/
+#   - data_ingestion, data_processing, data_eda, train -> apps/ml-training-workflow-circle/overlays/{env}/
+# - Environment mapping: main -> production, develop/others -> staging
+# - ArgoCD auto-syncs changes from GitOps repo to cluster.
+#
+# Conventions
+# - Immutable tags only (no generic latest); includes full SHA and branch tags.
+# - Least-privilege permissions with OIDC (id-token: write).
+# - Deterministic build/push sequence; no behavioral drift across runs.
+# - GitOps updates only for non-PR builds (requires GITOPS_TOKEN and GITOPS_REPO secrets).
+# =============================================================================
+name: Build and Push to ECR
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+    paths:
+      - 'components/**'
+      - '.github/workflows/build-and-push-ecr.yml'
+  pull_request:
+    branches:
+      - main
+      - develop
+    paths:
+      - 'components/**'
+      - '.github/workflows/build-and-push-ecr.yml'
+
+env:
+  PYTHON_VERSION: "3.10"
+  # Note: AWS_CONFIG_FILE not used in CI/CD - GitHub Secrets only for security
+
+jobs:
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      components: ${{ steps.changes.outputs.components }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1  # Minimal fetch for production speed
+
+      - name: Detect changed components (Production Optimized)
+        id: changes
+        run: |
+          set -euo pipefail
+          
+          echo "🔍 Detecting changed components (production mode)..."
+          ALL='["data_ingestion","data_processing","data_eda","train","inference"]'
+          
+          # First commit: build all
+          PARENT_SHA=$(git rev-parse --verify HEAD^ 2>/dev/null || echo "")
+          if [ -z "$PARENT_SHA" ]; then
+            echo "✅ First commit: building all components"
+            echo "components=$ALL" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
+          # Determine base commit quickly
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            git fetch --depth=1 origin ${{ github.base_ref }}:refs/remotes/origin/${{ github.base_ref }} 2>/dev/null || true
+            BASE_SHA=$(git merge-base HEAD origin/${{ github.base_ref }} 2>/dev/null || echo "")
+          else
+            BASE_SHA="$PARENT_SHA"
+          fi
+          
+          if [ -z "$BASE_SHA" ]; then
+            echo "⚠️  Cannot determine base SHA, building all"
+            echo "components=$ALL" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
+          # Fast diff and single-pass extraction
+          CHANGED=$(git diff --name-only --diff-filter=ACMR "$BASE_SHA" HEAD 2>/dev/null || echo "")
+          if [ -z "$CHANGED" ]; then
+            echo "⚠️  No changes detected"
+            echo "components=[]" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
+          # Note: config/aws.json changes are ignored in CI/CD
+          # CI/CD uses GitHub Secrets exclusively (no config file fallback)
+          # Config file is for local development only
+          
+          # Extract component names and emit as JSON array
+          COMPONENTS_JSON=$(echo "$CHANGED" | awk -F/ '
+            BEGIN { OFS="" }
+            /^components\/(data_ingestion|data_processing|data_eda|train|inference)\// { seen[$2]=1 }
+            END {
+              n=0; printf "[";
+              for (k in seen) { if (n++) printf ","; printf "\"" k "\"" }
+              printf "]";
+            }')
+          
+          # If empty, no component changes
+          if [ "$COMPONENTS_JSON" = "[]" ]; then
+            echo "⚠️  No component changes"
+          else
+            echo "✅ Changed components: $COMPONENTS_JSON"
+          fi
+          
+          echo "components=$COMPONENTS_JSON" >> $GITHUB_OUTPUT
+
+  build-and-push:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.components != '[]'
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write  # Required for OIDC authentication with AWS
+      contents: read   # Required for checkout
+    env:
+      REPO_PREFIX: ml-fashion-recommender  # Fixed ECR namespace for all components
+    strategy:
+      matrix:
+        component: ${{ fromJson(needs.detect-changes.outputs.components) }}
+      fail-fast: false
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Load AWS configuration (Secrets-only, Zero-Trust)
+        id: aws-config-loader
+        env:
+          # GitHub Secrets ONLY - no config file fallback for security
+          # This follows BigTech best practice: zero-trust in CI/CD
+          AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+          AWS_IAM_ROLE_ARN: ${{ secrets.AWS_IAM_ROLE_ARN }}
+          AWS_ECR_REGISTRY: ${{ secrets.AWS_ECR_REGISTRY }}
+        run: |
+          set -euo pipefail
+          
+          # BigTech Security Principle: Secrets-only in CI/CD
+          # No config file fallback to prevent accidental exposure
+          # Config files are for local development only
+          
+          # Validate all required secrets are present
+          MISSING_SECRETS=()
+          
+          if [ -z "${AWS_ACCOUNT_ID:-}" ] || [ "${AWS_ACCOUNT_ID}" = "null" ]; then
+            MISSING_SECRETS+=("AWS_ACCOUNT_ID")
+          fi
+          
+          if [ -z "${AWS_REGION:-}" ] || [ "${AWS_REGION}" = "null" ]; then
+            MISSING_SECRETS+=("AWS_REGION")
+          fi
+          
+          if [ -z "${AWS_IAM_ROLE_ARN:-}" ] || [ "${AWS_IAM_ROLE_ARN}" = "null" ]; then
+            MISSING_SECRETS+=("AWS_IAM_ROLE_ARN")
+          fi
+          
+          if [ -z "${AWS_ECR_REGISTRY:-}" ] || [ "${AWS_ECR_REGISTRY}" = "null" ]; then
+            MISSING_SECRETS+=("AWS_ECR_REGISTRY")
+          fi
+          
+          if [ ${#MISSING_SECRETS[@]} -gt 0 ]; then
+            echo "❌ Error: Missing required GitHub Secrets:" >&2
+            printf "   - %s\n" "${MISSING_SECRETS[@]}" >&2
+            echo "" >&2
+            echo "📋 Setup Instructions:" >&2
+            echo "   1. Go to Repository Settings → Secrets and variables → Actions" >&2
+            echo "   2. Add the following secrets:" >&2
+            echo "      - AWS_ACCOUNT_ID: Your AWS account ID (12 digits)" >&2
+            echo "      - AWS_REGION: AWS region (e.g., ap-southeast-2)" >&2
+            echo "      - AWS_IAM_ROLE_ARN: IAM role ARN for GitHub Actions OIDC" >&2
+            echo "      - AWS_ECR_REGISTRY: ECR registry URL" >&2
+            echo "" >&2
+            echo "🔒 Security Note: Config files are NOT used in CI/CD for security." >&2
+            echo "   Use GitHub Secrets exclusively in production." >&2
+            exit 1
+          fi
+          
+          # Assign validated values
+          ACCOUNT_ID="${AWS_ACCOUNT_ID}"
+          REGION="${AWS_REGION}"
+          IAM_ROLE_ARN="${AWS_IAM_ROLE_ARN}"
+          ECR_REGISTRY="${AWS_ECR_REGISTRY}"
+          
+          # Validate formats
+          if [[ ! "$ACCOUNT_ID" =~ ^[0-9]{12}$ ]]; then
+            echo "❌ Error: Invalid account_id format: $ACCOUNT_ID (must be 12 digits)" >&2
+            exit 1
+          fi
+          
+          if [[ ! "$REGION" =~ ^[a-z]{2}-[a-z]+-[0-9]+$ ]]; then
+            echo "❌ Error: Invalid region format: $REGION" >&2
+            exit 1
+          fi
+          
+          if [[ ! "$IAM_ROLE_ARN" =~ ^arn:aws:iam::[0-9]{12}:role/ ]]; then
+            echo "❌ Error: Invalid IAM role ARN format: $IAM_ROLE_ARN" >&2
+            exit 1
+          fi
+          
+          if [[ ! "$ECR_REGISTRY" =~ ^[0-9]{12}\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com$ ]]; then
+            echo "❌ Error: Invalid ECR registry format: $ECR_REGISTRY" >&2
+            exit 1
+          fi
+          
+          # Mask sensitive values in logs (security best practice)
+          echo "::add-mask::$ACCOUNT_ID"
+          echo "::add-mask::$IAM_ROLE_ARN"
+          echo "::add-mask::$ECR_REGISTRY"
+          
+          echo "✅ AWS configuration loaded from: GitHub Secrets (zero-trust)"
+          echo ""
+          echo "📋 Configuration (ECR only, masked for security):"
+          echo "  Region: $REGION"
+          echo "  Source: GitHub Secrets (no config file used in CI/CD)"
+          
+          # Output values for subsequent steps
+          echo "account_id=$ACCOUNT_ID" >> $GITHUB_OUTPUT
+          echo "region=$REGION" >> $GITHUB_OUTPUT
+          echo "iam_role_arn=$IAM_ROLE_ARN" >> $GITHUB_OUTPUT
+          echo "ecr_registry=$ECR_REGISTRY" >> $GITHUB_OUTPUT
+          echo "config_source=GitHub Secrets" >> $GITHUB_OUTPUT
+
+      - name: Validate AWS configuration
+        id: validate-config
+        run: |
+          # Values are already validated in previous step
+          # This step just ensures we have all required values
+          ACCOUNT_ID="${{ steps.aws-config-loader.outputs.account_id }}"
+          REGION="${{ steps.aws-config-loader.outputs.region }}"
+          IAM_ROLE_ARN="${{ steps.aws-config-loader.outputs.iam_role_arn }}"
+          ECR_REGISTRY="${{ steps.aws-config-loader.outputs.ecr_registry }}"
+          CONFIG_SOURCE="${{ steps.aws-config-loader.outputs.config_source }}"
+          
+          echo "✅ Configuration validated - Source: $CONFIG_SOURCE"
+          
+          # Output for backward compatibility
+          echo "account_id=$ACCOUNT_ID" >> $GITHUB_OUTPUT
+          echo "region=$REGION" >> $GITHUB_OUTPUT
+          echo "iam_role_arn=$IAM_ROLE_ARN" >> $GITHUB_OUTPUT
+          echo "ecr_registry=$ECR_REGISTRY" >> $GITHUB_OUTPUT
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ steps.validate-config.outputs.iam_role_arn }}
+          aws-region: ${{ steps.validate-config.outputs.region }}
+          role-session-name: GitHubActions-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Prepare AWS config outputs
+        id: aws-config
+        run: |
+          # Use values from config loader step (ECR only)
+          ACCOUNT_ID="${{ steps.aws-config-loader.outputs.account_id }}"
+          REGION="${{ steps.aws-config-loader.outputs.region }}"
+          ECR_REGISTRY="${{ steps.aws-config-loader.outputs.ecr_registry }}"
+          
+          # Pass through ECR config values
+          echo "account_id=$ACCOUNT_ID" >> $GITHUB_OUTPUT
+          echo "region=$REGION" >> $GITHUB_OUTPUT
+          echo "ecr_registry=$ECR_REGISTRY" >> $GITHUB_OUTPUT
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Generate immutable image tags
+        id: image-tags
+        run: |
+          set -euo pipefail
+          
+          # Extract branch name from ref (e.g., refs/heads/main -> main)
+          BRANCH_NAME="${GITHUB_REF#refs/heads/}"
+          SHORT_SHA="${GITHUB_SHA::7}"
+          FULL_SHA="${GITHUB_SHA}"
+          
+          # Generate tags based on event type and branch
+          # BigTech ML Platform Standard: Immutable tag strategy
+          # Primary tag: branch-short_sha (for builds)
+          # Additional tags: full_sha, branch-full_sha (for GitOps), branch-latest (mutable)
+          if [ "${{ github.event_name }}" == "pull_request" ]; then
+            # PR: pr-{number}-{short-sha}
+            PRIMARY_TAG="pr-${{ github.event.pull_request.number }}-${SHORT_SHA}"
+            ADDITIONAL_TAGS="${FULL_SHA},pr-${{ github.event.pull_request.number }}"
+          elif [ "${{ github.ref }}" == "refs/heads/main" ]; then
+            # Main branch: main-{short-sha} (immutable production tag)
+            PRIMARY_TAG="main-${SHORT_SHA}"
+            # Include main-{full_sha} for GitOps (immutable, ensures reproducibility)
+            ADDITIONAL_TAGS="${FULL_SHA},main-${FULL_SHA},main-latest"
+          elif [ "${{ github.ref }}" == "refs/heads/develop" ]; then
+            # Develop branch: develop-{short-sha}
+            PRIMARY_TAG="develop-${SHORT_SHA}"
+            # Include develop-{full_sha} for GitOps (immutable, ensures reproducibility)
+            ADDITIONAL_TAGS="${FULL_SHA},develop-${FULL_SHA},develop-latest"
+          else
+            # Feature/other branches: {branch-name}-{short-sha}
+            # Sanitize branch name (replace / with -)
+            SANITIZED_BRANCH=$(echo "$BRANCH_NAME" | sed 's/[^a-zA-Z0-9-]/-/g')
+            PRIMARY_TAG="${SANITIZED_BRANCH}-${SHORT_SHA}"
+            ADDITIONAL_TAGS="${FULL_SHA}"
+          fi
+          
+          echo "tag=${PRIMARY_TAG}" >> $GITHUB_OUTPUT
+          echo "additional_tags=${ADDITIONAL_TAGS}" >> $GITHUB_OUTPUT
+          echo "full_sha=${FULL_SHA}" >> $GITHUB_OUTPUT
+          echo "short_sha=${SHORT_SHA}" >> $GITHUB_OUTPUT
+          
+          echo "📋 Image Tags:"
+          echo "  Primary: ${PRIMARY_TAG}"
+          echo "  Additional: ${ADDITIONAL_TAGS}"
+          echo "  Full SHA: ${FULL_SHA}"
+
+      - name: Build Docker image
+        env:
+          COMPONENT: ${{ matrix.component }}
+          ECR_REGISTRY: ${{ steps.aws-config.outputs.ecr_registry }}
+          AWS_REGION: ${{ steps.aws-config.outputs.region }}
+          REPO_PREFIX: ${{ env.REPO_PREFIX }}
+        run: |
+          set -euo pipefail
+          
+          # Get tags from previous step
+          PRIMARY_TAG="${{ steps.image-tags.outputs.tag }}"
+          ADDITIONAL_TAGS="${{ steps.image-tags.outputs.additional_tags }}"
+          
+          echo "🔨 Building component: $COMPONENT"
+          echo "   Region: $AWS_REGION"
+          echo "   Primary tag: ${PRIMARY_TAG}"
+          
+          # Validate component directory exists
+          if [ ! -d "components/$COMPONENT" ]; then
+            echo "❌ Error: Component directory not found: components/$COMPONENT"
+            exit 1
+          fi
+          
+          # Validate Dockerfile exists
+          if [ ! -f "components/$COMPONENT/Dockerfile" ]; then
+            echo "❌ Error: Dockerfile not found: components/$COMPONENT/Dockerfile"
+            exit 1
+          fi
+          
+          # Build Docker image with immutable tags (BigTech ML standard)
+          REPO_PATH="$ECR_REGISTRY/$REPO_PREFIX/$COMPONENT"
+          BUILD_CMD="docker build -t $REPO_PATH:${PRIMARY_TAG}"
+          
+          # Add additional tags (full SHA and branch-latest for main/develop)
+          IFS=',' read -ra TAG_ARRAY <<< "$ADDITIONAL_TAGS"
+          for tag in "${TAG_ARRAY[@]}"; do
+            if [ -n "$tag" ]; then
+              BUILD_CMD="$BUILD_CMD -t $REPO_PATH:${tag}"
+            fi
+          done
+          
+          BUILD_CMD="$BUILD_CMD -f components/$COMPONENT/Dockerfile components/$COMPONENT/"
+          
+          echo "Building with tags:"
+          echo "  Primary: ${PRIMARY_TAG}"
+          for tag in "${TAG_ARRAY[@]}"; do
+            if [ -n "$tag" ]; then
+              echo "  Additional: ${tag}"
+            fi
+          done
+          
+          eval $BUILD_CMD
+          
+          echo "✅ Build completed for $COMPONENT:${PRIMARY_TAG}"
+
+      - name: Push Docker images to ECR
+        env:
+          COMPONENT: ${{ matrix.component }}
+          ECR_REGISTRY: ${{ steps.aws-config.outputs.ecr_registry }}
+          PRIMARY_TAG: ${{ steps.image-tags.outputs.tag }}
+          ADDITIONAL_TAGS: ${{ steps.image-tags.outputs.additional_tags }}
+          AWS_REGION: ${{ steps.aws-config.outputs.region }}
+          REPO_PREFIX: ${{ env.REPO_PREFIX }}
+        run: |
+          set -euo pipefail
+          
+          echo "🚀 Pushing images to ECR with immutable tags..."
+          REPO_NAME="$REPO_PREFIX/$COMPONENT"
+          
+          # Function to push with retry
+          push_with_retry() {
+            local image_tag=$1
+            local max_retries=3
+            local retry_count=0
+            
+            while [ $retry_count -lt $max_retries ]; do
+              if docker push "$ECR_REGISTRY/$REPO_PREFIX/$COMPONENT:${image_tag}"; then
+                echo "✅ Successfully pushed $ECR_REGISTRY/$REPO_PREFIX/$COMPONENT:${image_tag}"
+                return 0
+              else
+                retry_count=$((retry_count + 1))
+                if [ $retry_count -lt $max_retries ]; then
+                  echo "⚠️  Push failed for ${image_tag}, retrying ($retry_count/$max_retries)..."
+                  sleep 5
+                else
+                  echo "❌ Failed to push ${image_tag} after $max_retries attempts"
+                  return 1
+                fi
+              fi
+            done
+            return 1
+          }
+          
+          # Push primary tag (immutable)
+          if ! push_with_retry "${PRIMARY_TAG}"; then
+            echo "❌ Failed to push primary tag"
+            exit 1
+          fi
+          
+          # Push additional tags (full SHA and branch-latest if applicable)
+          IFS=',' read -ra TAG_ARRAY <<< "$ADDITIONAL_TAGS"
+          for tag in "${TAG_ARRAY[@]}"; do
+            if [ -n "$tag" ]; then
+              echo "🏷️  Pushing additional tag: ${tag}"
+              if ! push_with_retry "${tag}"; then
+                echo "⚠️  Warning: Failed to push tag ${tag} (non-fatal)"
+              fi
+            fi
+          done
+          
+          # Display image digest (from primary tag)
+          IMAGE_DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' $ECR_REGISTRY/$REPO_PREFIX/$COMPONENT:${PRIMARY_TAG} 2>/dev/null || echo "N/A")
+          echo "📋 Image digest: $IMAGE_DIGEST"
+
+      - name: Derive environment and GitOps config
+        id: gitops-config
+        env:
+          COMPONENT: ${{ matrix.component }}
+        run: |
+          set -euo pipefail
+          
+          COMPONENT="${{ matrix.component }}"
+          
+          # Determine environment and overlay based on branch
+          if [[ "${GITHUB_REF##*/}" == "main" ]]; then
+            ENV="production"
+            OVERLAY="production"
+          elif [[ "${GITHUB_REF##*/}" == "develop" ]]; then
+            ENV="staging"
+            OVERLAY="staging"
+          else
+            ENV="staging"
+            OVERLAY="staging"
+          fi
+          
+          # Map component to GitOps app path and image name
+          # inference -> ml-recommendation-inference app
+          # Other components -> ml-training-workflow-circle app
+          case "$COMPONENT" in
+            inference)
+              GITOPS_APP="ml-recommendation-inference"
+              GITOPS_IMAGE_NAME="inference"
+              ;;
+            data_ingestion)
+              GITOPS_APP="ml-training-workflow-circle"
+              GITOPS_IMAGE_NAME="data-ingestion"
+              ;;
+            data_processing)
+              GITOPS_APP="ml-training-workflow-circle"
+              GITOPS_IMAGE_NAME="data-processing"
+              ;;
+            data_eda)
+              GITOPS_APP="ml-training-workflow-circle"
+              GITOPS_IMAGE_NAME="data-eda"
+              ;;
+            train)
+              GITOPS_APP="ml-training-workflow-circle"
+              GITOPS_IMAGE_NAME="train-model"
+              ;;
+            *)
+              echo "⚠️  Unknown component: $COMPONENT, skipping GitOps update"
+              echo "enabled=false" >> $GITHUB_OUTPUT
+              exit 0
+              ;;
+          esac
+          
+          echo "env=${ENV}" >> $GITHUB_OUTPUT
+          echo "overlay=${OVERLAY}" >> $GITHUB_OUTPUT
+          echo "gitops_app=${GITOPS_APP}" >> $GITHUB_OUTPUT
+          echo "gitops_image_name=${GITOPS_IMAGE_NAME}" >> $GITHUB_OUTPUT
+          echo "enabled=true" >> $GITHUB_OUTPUT
+          
+          echo "📋 GitOps Configuration:"
+          echo "   Component: ${COMPONENT}"
+          echo "   Environment: ${ENV}"
+          echo "   Overlay: ${OVERLAY}"
+          echo "   GitOps App: ${GITOPS_APP}"
+          echo "   Image Name: ${GITOPS_IMAGE_NAME}"
+
+      - name: Check GitOps secrets
+        id: gitops-check
+        env:
+          GITOPS_TOKEN: ${{ secrets.GITOPS_TOKEN }}
+          GITOPS_REPO: ${{ secrets.GITOPS_REPO }}
+        run: |
+          set -euo pipefail
+          
+          if [[ -z "${GITOPS_TOKEN:-}" ]] || [[ "${GITOPS_TOKEN}" == "null" ]]; then
+            echo "⚠️  Warning: GITOPS_TOKEN not set, skipping GitOps update"
+            echo "enabled=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
+          if [[ -z "${GITOPS_REPO:-}" ]] || [[ "${GITOPS_REPO}" == "null" ]]; then
+            echo "⚠️  Warning: GITOPS_REPO not set, skipping GitOps update"
+            echo "enabled=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
+          echo "✅ GitOps secrets found"
+          echo "enabled=true" >> $GITHUB_OUTPUT
+
+      - name: Update GitOps repo image tag
+        env:
+          GITOPS_TOKEN: ${{ secrets.GITOPS_TOKEN }}
+          GITOPS_REPO: ${{ secrets.GITOPS_REPO }}
+        if: steps.gitops-config.outputs.enabled == 'true' && steps.gitops-check.outputs.enabled == 'true' && github.event_name != 'pull_request'
+        run: |
+          set -euo pipefail
+          
+          ENV="${{ steps.gitops-config.outputs.env }}"
+          OVERLAY="${{ steps.gitops-config.outputs.overlay }}"
+          GITOPS_APP="${{ steps.gitops-config.outputs.gitops_app }}"
+          GITOPS_IMAGE_NAME="${{ steps.gitops-config.outputs.gitops_image_name }}"
+          REPO_URI="${{ steps.aws-config.outputs.ecr_registry }}/${{ env.REPO_PREFIX }}/${{ matrix.component }}"
+          # BigTech ML Platform Standard: Use branch-full_sha tag for GitOps (immutable, ensures reproducibility)
+          # This matches the tag strategy in build-inference-gitops.yml
+          FULL_SHA_TAG="${{ steps.image-tags.outputs.full_sha }}"
+          BRANCH_NAME="${GITHUB_REF##*/}"
+          # For main/develop branches, use branch-full_sha format (already pushed in additional_tags)
+          # For other branches, use primary tag (branch-short_sha)
+          if [[ "${BRANCH_NAME}" == "main" ]]; then
+            IMAGE_TAG="main-${FULL_SHA_TAG}"
+          elif [[ "${BRANCH_NAME}" == "develop" ]]; then
+            IMAGE_TAG="develop-${FULL_SHA_TAG}"
+          else
+            # For other branches, use primary tag (branch-short_sha)
+            IMAGE_TAG="${{ steps.image-tags.outputs.tag }}"
+          fi
+          
+          echo "📝 Updating GitOps repo..."
+          echo "   Component: ${{ matrix.component }}"
+          echo "   Environment: ${ENV}"
+          echo "   Overlay: ${OVERLAY}"
+          echo "   GitOps App: ${GITOPS_APP}"
+          echo "   Image Name: ${GITOPS_IMAGE_NAME}"
+          echo "   Image: ${REPO_URI}:${IMAGE_TAG}"
+          
+          # Clone GitOps repo
+          WORKDIR=$(mktemp -d)
+          git config --global user.name "gh-actions-bot"
+          git config --global user.email "gh-actions-bot@users.noreply.github.com"
+          
+          # Extract repo URL and add token
+          if [[ "${GITOPS_REPO}" == https://* ]]; then
+            REPO_URL="${GITOPS_REPO/https:\/\//https://${GITOPS_TOKEN}@}"
+          elif [[ "${GITOPS_REPO}" == http://* ]]; then
+            REPO_URL="${GITOPS_REPO/http:\/\//http://${GITOPS_TOKEN}@}"
+          else
+            # Assume format: github.com/owner/repo or owner/repo
+            REPO_URL="https://${GITOPS_TOKEN}@${GITOPS_REPO}"
+          fi
+          
+          echo "🔐 Cloning GitOps repo..."
+          git clone "${REPO_URL}" "${WORKDIR}/gitops" || {
+            echo "❌ Failed to clone GitOps repo"
+            exit 1
+          }
+          
+          cd "${WORKDIR}/gitops"
+          
+          # Update kustomization.yaml
+          KUSTOMIZATION_FILE="apps/${GITOPS_APP}/overlays/${OVERLAY}/kustomization.yaml"
+          
+          if [ ! -f "${KUSTOMIZATION_FILE}" ]; then
+            echo "❌ Error: File not found: ${KUSTOMIZATION_FILE}"
+            exit 1
+          fi
+          
+          echo "📝 Updating ${KUSTOMIZATION_FILE}..."
+          
+          # Use yq if available, otherwise use sed
+          if command -v yq >/dev/null 2>&1; then
+            # Update newName (ECR registry URL)
+            yq eval -i ".images[] |= select(.name==\"${GITOPS_IMAGE_NAME}\").newName = \"${REPO_URI}\"" "${KUSTOMIZATION_FILE}"
+            # Update newTag
+            yq eval -i ".images[] |= select(.name==\"${GITOPS_IMAGE_NAME}\").newTag = \"${IMAGE_TAG}\"" "${KUSTOMIZATION_FILE}"
+          else
+            # Fallback: use sed to update lines
+            # Update newName (match the line with newName for the specific image)
+            sed -i "/name: ${GITOPS_IMAGE_NAME}/,/newName:/ s|newName:.*|newName: ${REPO_URI}|g" "${KUSTOMIZATION_FILE}"
+            # Update newTag (match the line with newTag after the image name)
+            sed -i "/name: ${GITOPS_IMAGE_NAME}/,/newTag:/ s|newTag:.*|newTag: ${IMAGE_TAG}|g" "${KUSTOMIZATION_FILE}"
+          fi
+          
+          # Verify changes
+          echo "📋 Updated kustomization.yaml:"
+          grep -A 3 "name: ${GITOPS_IMAGE_NAME}" "${KUSTOMIZATION_FILE}" || true
+          
+          # Commit and push
+          git add "${KUSTOMIZATION_FILE}"
+          
+          # Check if there are changes
+          if git diff --staged --quiet; then
+            echo "ℹ️  No changes to commit (tag already up-to-date)"
+          else
+            COMMIT_MSG="ci: update ${GITOPS_IMAGE_NAME} image to ${IMAGE_TAG} for ${ENV} (${{ steps.image-tags.outputs.short_sha }})"
+            git commit -m "${COMMIT_MSG}"
+            
+            echo "🚀 Pushing changes to GitOps repo..."
+            git push origin HEAD || {
+              echo "❌ Failed to push to GitOps repo"
+              exit 1
+            }
+            
+            echo "✅ GitOps repo updated successfully"
+            echo "📋 Commit: ${COMMIT_MSG}"
+          fi
+          
+          # Cleanup
+          rm -rf "${WORKDIR}"
+
+      - name: Build Summary
+        env:
+          COMPONENT: ${{ matrix.component }}
+          ECR_REGISTRY: ${{ steps.aws-config.outputs.ecr_registry }}
+          PRIMARY_TAG: ${{ steps.image-tags.outputs.tag }}
+          ADDITIONAL_TAGS: ${{ steps.image-tags.outputs.additional_tags }}
+          FULL_SHA: ${{ steps.image-tags.outputs.full_sha }}
+          SHORT_SHA: ${{ steps.image-tags.outputs.short_sha }}
+          AWS_REGION: ${{ steps.aws-config.outputs.region }}
+          ACCOUNT_ID: ${{ steps.aws-config.outputs.account_id }}
+          REPO_PREFIX: ${{ env.REPO_PREFIX }}
+          GITOPS_UPDATED: ${{ steps.gitops-config.outputs.enabled == 'true' && steps.gitops-check.outputs.enabled == 'true' && github.event_name != 'pull_request' }}
+          GITOPS_APP: ${{ steps.gitops-config.outputs.gitops_app }}
+          GITOPS_IMAGE_NAME: ${{ steps.gitops-config.outputs.gitops_image_name }}
+          ENV: ${{ steps.gitops-config.outputs.env }}
+        run: |
+          echo "### ✅ Build and Push Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| **Component** | \`$COMPONENT\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Primary Tag** | \`${PRIMARY_TAG}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Full SHA** | \`${FULL_SHA}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Short SHA** | \`${SHORT_SHA}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Registry** | \`$ECR_REGISTRY\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Region** | \`$AWS_REGION\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **GitOps Updated** | $([ "${GITOPS_UPDATED}" == "true" ] && echo "✅ Yes" || echo "❌ No") |" >> $GITHUB_STEP_SUMMARY
+          # Do not expose Account ID in logs
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Primary Image URL:**" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          echo "$ECR_REGISTRY/$REPO_PREFIX/$COMPONENT:${PRIMARY_TAG}" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ -n "$ADDITIONAL_TAGS" ]; then
+            echo "**Additional Tags:**" >> $GITHUB_STEP_SUMMARY
+            IFS=',' read -ra TAG_ARRAY <<< "$ADDITIONAL_TAGS"
+            for tag in "${TAG_ARRAY[@]}"; do
+              if [ -n "$tag" ]; then
+                echo "- \`$ECR_REGISTRY/$REPO_PREFIX/$COMPONENT:${tag}\`" >> $GITHUB_STEP_SUMMARY
+              fi
+            done
+          fi
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ "${GITOPS_UPDATED}" == "true" ]; then
+            echo "✅ **ArgoCD will automatically sync** this image to \`${ENV}\` environment" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "📋 **GitOps Configuration:**" >> $GITHUB_STEP_SUMMARY
+            echo "- **GitOps App**: \`${GITOPS_APP}\`" >> $GITHUB_STEP_SUMMARY
+            echo "- **Image Name**: \`${GITOPS_IMAGE_NAME}\`" >> $GITHUB_STEP_SUMMARY
+            echo "- **Environment**: \`${ENV}\`" >> $GITHUB_STEP_SUMMARY
+            echo "- **Updated File**: \`apps/${GITOPS_APP}/overlays/${ENV}/kustomization.yaml\`" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "ℹ️  GitOps update skipped (PR or secrets not configured)" >> $GITHUB_STEP_SUMMARY
+          fi
+
