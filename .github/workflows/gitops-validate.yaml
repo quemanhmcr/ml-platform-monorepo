@@ -1,0 +1,166 @@
+# =============================================================================
+# Workflow: Validate GitOps Repository
+#
+# Purpose
+# - Validate YAML syntax, ArgoCD Application definitions, and Kustomize builds
+# - Ensure GitOps repository structure integrity
+# - Run linting and validation checks before merging
+#
+# =============================================================================
+name: Validate GitOps Repository
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+    paths:
+      - 'ml-gitops/apps/**'
+      - 'ml-gitops/bootstrap/**'
+      - 'ml-gitops/argocd-root/**'
+      - 'ml-gitops/manifests/**'
+      - '.github/workflows/gitops-validate.yaml'
+  pull_request:
+    branches:
+      - main
+      - develop
+    paths:
+      - 'ml-gitops/apps/**'
+      - 'ml-gitops/bootstrap/**'
+      - 'ml-gitops/argocd-root/**'
+      - 'ml-gitops/manifests/**'
+
+defaults:
+  run:
+    working-directory: ml-gitops
+
+jobs:
+  validate-yaml:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install yq
+        run: |
+          wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+          chmod +x /usr/local/bin/yq
+
+      - name: Validate YAML syntax
+        run: |
+          echo "🔍 Validating YAML syntax..."
+          find . -type f \( -name "*.yaml" -o -name "*.yml" \) ! -path "./.git/*" | while read file; do
+            if ! yq eval '.' "$file" > /dev/null 2>&1; then
+              echo "❌ Invalid YAML: $file"
+              exit 1
+            fi
+          done
+          echo "✅ All YAML files are valid"
+
+      - name: Validate ArgoCD Application schemas
+        run: |
+          echo "🔍 Validating ArgoCD Application schemas..."
+          # Check for required fields in ArgoCD Applications
+          find . -name "*.yaml" -type f ! -path "./.git/*" | while read file; do
+            if yq eval '.kind' "$file" 2>/dev/null | grep -q "Application"; then
+              echo "Validating Application: $file"
+              # Check required fields
+              if ! yq eval '.metadata.name' "$file" > /dev/null 2>&1; then
+                echo "❌ Missing metadata.name in $file"
+                exit 1
+              fi
+              if ! yq eval '.spec' "$file" > /dev/null 2>&1; then
+                echo "❌ Missing spec in $file"
+                exit 1
+              fi
+            fi
+          done
+          echo "✅ All ArgoCD Applications are valid"
+
+  validate-kustomize:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install kubectl and kustomize
+        run: |
+          curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+          chmod +x kubectl
+          sudo mv kubectl /usr/local/bin/
+          
+          curl -LO "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv5.3.0/kustomize_v5.3.0_linux_amd64.tar.gz"
+          tar -xzf kustomize_v5.3.0_linux_amd64.tar.gz
+          chmod +x kustomize
+          sudo mv kustomize /usr/local/bin/
+
+      - name: Validate Kustomize builds
+        run: |
+          echo "🔍 Validating Kustomize builds..."
+          find . -name "kustomization.yaml" -type f | while read kfile; do
+            dir=$(dirname "$kfile")
+            echo "Validating Kustomize: $dir"
+            if ! kustomize build "$dir" > /dev/null 2>&1; then
+              echo "❌ Kustomize build failed: $dir"
+              kustomize build "$dir"
+              exit 1
+            fi
+          done
+          echo "✅ All Kustomize builds are valid"
+
+  validate-structure:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Validate repository structure
+        run: |
+          echo "🔍 Validating GitOps repository structure..."
+          
+          # Check required directories
+          required_dirs=("argocd-root" "apps" "bootstrap/apps")
+          for dir in "${required_dirs[@]}"; do
+            if [ ! -d "$dir" ]; then
+              echo "❌ Required directory missing: $dir"
+              exit 1
+            fi
+          done
+          
+          # Check root application exists
+          if [ ! -f "argocd-root/root-application.yaml" ]; then
+            echo "❌ Root application missing: argocd-root/root-application.yaml"
+            exit 1
+          fi
+          
+          echo "✅ Repository structure is valid"
+
+  validate-argocd-applicationset:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install yq
+        run: |
+          wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+          chmod +x /usr/local/bin/yq
+
+      - name: Validate ApplicationSet generators
+        run: |
+          echo "🔍 Validating ApplicationSet generators..."
+          find bootstrap/apps -name "*.yaml" -type f | while read file; do
+            if yq eval '.kind' "$file" 2>/dev/null | grep -q "ApplicationSet"; then
+              echo "Validating ApplicationSet: $file"
+              # Validate ApplicationSet structure
+              if ! yq eval '.spec.generators' "$file" > /dev/null 2>&1; then
+                echo "❌ Missing generators in ApplicationSet: $file"
+                exit 1
+              fi
+              if ! yq eval '.spec.template' "$file" > /dev/null 2>&1; then
+                echo "❌ Missing template in ApplicationSet: $file"
+                exit 1
+              fi
+            fi
+          done
+          echo "✅ All ApplicationSets are valid"
